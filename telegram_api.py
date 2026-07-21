@@ -43,6 +43,19 @@ def send_message(text: str, thread_id: int | None = None,
     return None
 
 
+def edit_message(message_id: int, text: str, reply_markup: dict | None = None) -> None:
+    payload: dict = {"chat_id": config.CHAT_ID, "message_id": message_id, "text": text}
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    try:
+        resp = requests.post(f"{_BASE_URL}/editMessageText", json=payload, timeout=10)
+        data = resp.json()
+        if not data.get("ok") and "message is not modified" not in data.get("description", ""):
+            print(f"  editMessageText failed: {data}")
+    except Exception as e:
+        print(f"  edit error: {e}")
+
+
 def answer_callback_query(callback_query_id: str, text: str | None = None) -> None:
     payload = {"callback_query_id": callback_query_id}
     if text:

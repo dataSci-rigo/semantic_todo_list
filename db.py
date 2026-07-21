@@ -1,5 +1,6 @@
-"""SQLite storage — Phase 0 subset of the spec's data model (tasks,
-procedures, captures only; entities/inventory/requirements land in Phase 1a)."""
+"""SQLite storage for the spec's data model: tasks/procedures/captures
+(Phase 0) plus entities/inventory/task_requirements/shopping_lists (Phase 1a).
+Phase 1b (dependencies, availability_windows) is not yet built."""
 from __future__ import annotations
 
 import json
@@ -54,7 +55,58 @@ CREATE TABLE IF NOT EXISTS captures (
     linked_task_ids       TEXT,
     created_at            TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS entities (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    type           TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    notes          TEXT,
+    created_at     TEXT NOT NULL,
+    UNIQUE(type, canonical_name)
+);
+
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id INTEGER NOT NULL REFERENCES entities(id),
+    alias     TEXT NOT NULL,
+    UNIQUE(entity_id, alias)
+);
+
+CREATE TABLE IF NOT EXISTS task_requirements (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id),
+    entity_id  INTEGER NOT NULL REFERENCES entities(id),
+    kind       TEXT NOT NULL,
+    level      INTEGER,
+    satisfied  INTEGER NOT NULL DEFAULT 0,
+    note       TEXT,
+    UNIQUE(task_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS inventory (
+    entity_id        INTEGER PRIMARY KEY REFERENCES entities(id),
+    on_hand          INTEGER NOT NULL DEFAULT 0,
+    last_confirmed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS shopping_lists (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS shopping_list_items (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id   INTEGER NOT NULL REFERENCES shopping_lists(id),
+    entity_id INTEGER NOT NULL REFERENCES entities(id),
+    task_id   INTEGER REFERENCES tasks(id),
+    purchased INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(list_id, entity_id, task_id)
+);
 """
+
+SUPPLY_STORE_LIST = "supply store run"
+ONLINE_LIST = "online shopping"
+GROCERY_LIST = "groceries"
 
 
 def _connect() -> sqlite3.Connection:
@@ -214,5 +266,180 @@ def get_capture(capture_id: int) -> sqlite3.Row | None:
     conn = _connect()
     try:
         return conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+# ── entities ───────────────────────────────────────────────────────────────
+
+def get_entities_by_type(entity_type: str) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, canonical_name FROM entities WHERE type = ?", (entity_type,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            aliases = [a["alias"] for a in conn.execute(
+                "SELECT alias FROM entity_aliases WHERE entity_id = ?", (r["id"],)
+            ).fetchall()]
+            out.append({"id": r["id"], "canonical_name": r["canonical_name"], "aliases": aliases})
+        return out
+    finally:
+        conn.close()
+
+
+def get_entity(entity_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def create_entity(entity_type: str, canonical_name: str) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO entities (type, canonical_name, created_at) VALUES (?, ?, ?)",
+            (entity_type, canonical_name, _now()),
+        )
+        conn.commit()
+        if cur.lastrowid:
+            return cur.lastrowid
+        row = conn.execute(
+            "SELECT id FROM entities WHERE type = ? AND canonical_name = ?",
+            (entity_type, canonical_name),
+        ).fetchone()
+        return row["id"]
+    finally:
+        conn.close()
+
+
+# ── task_requirements ────────────────────────────────────────────────────
+
+def create_requirement(task_id: int, entity_id: int, kind: str, level: int | None = None,
+                        satisfied: bool = False, note: str | None = None) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO task_requirements (task_id, entity_id, kind, level, satisfied, note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, entity_id, kind, level, int(satisfied), note),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def set_requirement_satisfied(task_id: int, entity_id: int, satisfied: bool) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE task_requirements SET satisfied = ? WHERE task_id = ? AND entity_id = ?",
+            (int(satisfied), task_id, entity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_requirement(task_id: int, entity_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM task_requirements WHERE task_id = ? AND entity_id = ?",
+            (task_id, entity_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_requirements_for_task(task_id: int) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT tr.*, e.canonical_name FROM task_requirements tr "
+            "JOIN entities e ON e.id = tr.entity_id WHERE tr.task_id = ?",
+            (task_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+# ── inventory ─────────────────────────────────────────────────────────────
+
+def get_inventory(entity_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM inventory WHERE entity_id = ?", (entity_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def set_inventory(entity_id: int, on_hand: bool) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO inventory (entity_id, on_hand, last_confirmed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(entity_id) DO UPDATE SET on_hand = excluded.on_hand, "
+            "last_confirmed_at = excluded.last_confirmed_at",
+            (entity_id, int(on_hand), _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── shopping lists ────────────────────────────────────────────────────────
+
+def ensure_shopping_list(name: str) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute("INSERT OR IGNORE INTO shopping_lists (name) VALUES (?)", (name,))
+        conn.commit()
+        if cur.lastrowid:
+            return cur.lastrowid
+        return conn.execute("SELECT id FROM shopping_lists WHERE name = ?", (name,)).fetchone()["id"]
+    finally:
+        conn.close()
+
+
+def add_shopping_item(list_name: str, entity_id: int, task_id: int | None) -> None:
+    list_id = ensure_shopping_list(list_name)
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO shopping_list_items (list_id, entity_id, task_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (list_id, entity_id, task_id, _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_shopping_list_items(list_name: str, unpurchased_only: bool = True) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        query = (
+            "SELECT sli.*, e.canonical_name FROM shopping_list_items sli "
+            "JOIN shopping_lists sl ON sl.id = sli.list_id "
+            "JOIN entities e ON e.id = sli.entity_id "
+            "WHERE sl.name = ?"
+        )
+        if unpurchased_only:
+            query += " AND sli.purchased = 0"
+        return conn.execute(query, (list_name,)).fetchall()
+    finally:
+        conn.close()
+
+
+def mark_purchased(item_id: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute("UPDATE shopping_list_items SET purchased = 1 WHERE id = ?", (item_id,))
+        conn.commit()
     finally:
         conn.close()
