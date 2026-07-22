@@ -17,6 +17,7 @@ import time
 import ai
 import config
 import db
+import flows
 import telegram_api as tg
 
 _offset = 0
@@ -44,6 +45,8 @@ def handle_text_capture(text: str, message_id: int, thread_id: int | None) -> No
         for t in parsed
     ]
     _send_confirmation(capture_id, task_ids, config.MODEL_HAIKU, {"tasks": parsed}, thread_id)
+    for task_id in task_ids:
+        flows.start_classification(task_id, thread_id)
 
 
 def handle_photo_capture(msg: dict, thread_id: int | None) -> None:
@@ -71,6 +74,8 @@ def handle_photo_capture(msg: dict, thread_id: int | None) -> None:
             return
         task_ids = [db.create_task(t["title"], t.get("description"), "screenshot", message_id) for t in tasks]
         _send_confirmation(capture_id, task_ids, config.MODEL_SONNET, result, thread_id)
+        for task_id in task_ids:
+            flows.start_classification(task_id, thread_id)
 
     elif kind == "situation":
         candidates = result.get("candidates", [])
@@ -91,6 +96,7 @@ def handle_photo_capture(msg: dict, thread_id: int | None) -> None:
             {"ingredients": result.get("ingredients", []), "steps": result.get("steps", [])},
         )
         _send_confirmation(capture_id, [task_id], config.MODEL_SONNET, result, thread_id)
+        flows.start_classification(task_id, thread_id)
 
     else:
         tg.send_message("Couldn't classify that photo.", thread_id)
@@ -100,13 +106,35 @@ def handle_other_reply(capture_row, text: str, thread_id: int | None) -> None:
     capture_id = capture_row["id"]
     task_id = db.create_task(text, None, "photo", capture_row["inbound_message_id"])
     _send_confirmation(capture_id, [task_id], config.MODEL_SONNET, {"other": text}, thread_id)
+    flows.start_classification(task_id, thread_id)
 
 
 def handle_callback_query(cq: dict) -> None:
     data = cq.get("data", "")
-    parts = data.split(":")
-    if len(parts) != 3 or parts[0] != "sit":
+    if data == "noop":
+        tg.answer_callback_query(cq["id"])
         return
+    parts = data.split(":")
+    prefix = parts[0]
+
+    if prefix == "clsf":
+        flows.handle_classification_callback(cq, int(parts[1]), parts[2], parts[3])
+        return
+    if prefix == "skill":
+        flows.handle_skill_callback(cq, int(parts[1]), parts[2])
+        return
+    if prefix == "newent":
+        flows.handle_newent_callback(cq, int(parts[1]), int(parts[2]))
+        return
+    if prefix == "chk":
+        flows.handle_checklist_toggle(cq, int(parts[1]), int(parts[2]))
+        return
+    if prefix == "sub":
+        flows.handle_substitution_callback(cq, int(parts[1]), int(parts[2]), parts[3])
+        return
+    if prefix != "sit":
+        return
+
     capture_id, choice = int(parts[1]), parts[2]
     capture_row = db.get_capture(capture_id)
     if capture_row is None:
@@ -131,6 +159,7 @@ def handle_callback_query(cq: dict) -> None:
     _send_confirmation(capture_id, [task_id], config.MODEL_SONNET,
                         json.loads(capture_row["ai_response_json"]), thread_id)
     tg.answer_callback_query(cq["id"], f"Saved: {title}")
+    flows.start_classification(task_id, thread_id)
 
 
 def handle_correction(capture_row, instruction: str, thread_id: int | None) -> None:
@@ -167,6 +196,8 @@ def handle_correction(capture_row, instruction: str, thread_id: int | None) -> N
 
     final_ids = list(surviving) + new_ids
     _send_confirmation(capture_row["id"], final_ids, config.MODEL_HAIKU, ops, thread_id, prefix="Updated:\n")
+    for task_id in new_ids:
+        flows.start_classification(task_id, thread_id)
 
 
 def _send_confirmation(capture_id: int, task_ids: list[int], model_used: str,
@@ -192,12 +223,16 @@ def handle_command(text: str, thread_id: int | None) -> None:
 
     if cmd == "help":
         tg.send_message(
-            "Semantic Task Manager (Phase 0)\n\n"
+            "Semantic Task Manager (Phase 0 + 1a)\n\n"
             "Send text, a screenshot of a list, a photo of a situation, or a photo of a "
-            "recipe/instructions — I'll save it as one or more tasks.\n"
+            "recipe/instructions — I'll save it as one or more tasks, then walk through "
+            "urgency/interest/energy/value, skill level, and a supply checklist.\n"
             "Reply to my confirmation message with corrections in plain English "
             "(\"delete the second one\", \"merge 1 and 3\").\n\n"
             "/delete <id> — delete a task by id\n"
+            "/store — supply-store shopping list\n"
+            "/online — online shopping list\n"
+            "/groceries — grocery list\n"
             "/help — show this message",
             thread_id,
         )
@@ -207,6 +242,15 @@ def handle_command(text: str, thread_id: int | None) -> None:
             return
         db.delete_task(int(args[0]))
         tg.send_message(f"Deleted #{args[0]}.", thread_id)
+    elif cmd in ("store", "online", "groceries"):
+        list_name = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
+                     "groceries": db.GROCERY_LIST}[cmd]
+        items = db.get_shopping_list_items(list_name)
+        if not items:
+            tg.send_message(f"{list_name}: nothing on the list.", thread_id)
+            return
+        lines = [f"{list_name}:"] + [f"- {i['canonical_name']}" for i in items]
+        tg.send_message("\n".join(lines), thread_id)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────

@@ -150,6 +150,19 @@ def normalize_entities(names: list[str], entity_type: str, existing: list[dict])
     return result.get("matches", [])
 
 
+# ── Phase 1a: supply extraction for instruction-type procedures ─────────
+
+EXTRACT_SUPPLIES_SYSTEM = """You read a list of instruction steps (e.g. for a router install or
+filter change) and list the distinct tools/supplies/parts they require. Respond with strict JSON
+only, no prose, no markdown fences: {"supplies": ["tool or supply name", ...]}"""
+
+
+def extract_supplies(steps: list[dict]) -> list[str]:
+    text = "\n".join(s.get("text", "") for s in steps)
+    result = _call(config.MODEL_HAIKU, EXTRACT_SUPPLIES_SYSTEM, [{"type": "text", "text": text}], max_tokens=512)
+    return result.get("supplies", [])
+
+
 # ── Phase 1a: recipe ingredient substitution ─────────────────────────────
 
 SUBSTITUTION_SYSTEM = """You propose exactly one substitution for a missing recipe ingredient.

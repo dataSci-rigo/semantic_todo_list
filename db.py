@@ -148,6 +148,14 @@ def create_task(title: str, description: str | None, source: str,
         conn.close()
 
 
+def get_task(task_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+
+
 def get_tasks(task_ids: list[int]) -> list[sqlite3.Row]:
     if not task_ids:
         return []
@@ -194,6 +202,36 @@ def create_procedure(task_id: int, proc_type: str, title: str | None, content: d
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_procedure(procedure_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM procedures WHERE id = ?", (procedure_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_procedure_by_task(task_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM procedures WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def update_procedure_content(procedure_id: int, content: dict) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE procedures SET content_json = ? WHERE id = ?",
+            (json.dumps(content), procedure_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -432,6 +470,19 @@ def get_shopping_list_items(list_name: str, unpurchased_only: bool = True) -> li
         if unpurchased_only:
             query += " AND sli.purchased = 0"
         return conn.execute(query, (list_name,)).fetchall()
+    finally:
+        conn.close()
+
+
+def remove_shopping_item(list_name: str, entity_id: int, task_id: int | None) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "DELETE FROM shopping_list_items WHERE entity_id = ? AND task_id IS ? AND "
+            "list_id = (SELECT id FROM shopping_lists WHERE name = ?)",
+            (entity_id, task_id, list_name),
+        )
+        conn.commit()
     finally:
         conn.close()
 
