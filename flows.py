@@ -169,11 +169,14 @@ def handle_newent_callback(cq: dict, task_id: int, proc_id: int) -> None:
 def _checklist_view(task_id: int) -> tuple[str, dict]:
     reqs = db.get_requirements_for_task(task_id)
     rows = [
-        [{"text": f"{'☑' if r['satisfied'] else '☐'} {r['canonical_name']}",
+        [{"text": f"{'✅ Own it' if r['satisfied'] else '🛒 Need it'} — {r['canonical_name']}",
           "callback_data": f"chk:{task_id}:{r['entity_id']}"}]
         for r in reqs
     ]
-    return f"Supply checklist for #{task_id}:", {"inline_keyboard": rows}
+    rows.append([{"text": "Done", "callback_data": f"chkdone:{task_id}"}])
+    text = (f"Supply checklist for #{task_id} — tap an item to toggle whether you already own it.\n"
+            "🛒 items get added to your shopping lists; ✅ items get removed.")
+    return text, {"inline_keyboard": rows}
 
 
 def _finalize_checklist(task_id: int, thread_id: int | None, proc_id: int) -> None:
@@ -211,6 +214,19 @@ def handle_checklist_toggle(cq: dict, task_id: int, entity_id: int) -> None:
         db.add_shopping_item(db.ONLINE_LIST, entity_id, task_id)
     text, kb = _checklist_view(task_id)
     tg.edit_message(cq["message"]["message_id"], text, reply_markup=kb)
+    tg.answer_callback_query(cq["id"])
+
+
+def handle_checklist_done(cq: dict, task_id: int) -> None:
+    reqs = db.get_requirements_for_task(task_id)
+    owned = [r["canonical_name"] for r in reqs if r["satisfied"]]
+    needed = [r["canonical_name"] for r in reqs if not r["satisfied"]]
+    lines = [f"Checklist saved for #{task_id}."]
+    if owned:
+        lines.append("Own: " + ", ".join(owned))
+    if needed:
+        lines.append("On shopping lists: " + ", ".join(needed) + " (see /store or /online)")
+    tg.edit_message(cq["message"]["message_id"], "\n".join(lines))
     tg.answer_callback_query(cq["id"])
 
 

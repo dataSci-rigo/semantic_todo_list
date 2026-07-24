@@ -129,6 +129,9 @@ def handle_callback_query(cq: dict) -> None:
     if prefix == "chk":
         flows.handle_checklist_toggle(cq, int(parts[1]), int(parts[2]))
         return
+    if prefix == "chkdone":
+        flows.handle_checklist_done(cq, int(parts[1]))
+        return
     if prefix == "sub":
         flows.handle_substitution_callback(cq, int(parts[1]), int(parts[2]), parts[3])
         return
