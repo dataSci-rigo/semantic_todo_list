@@ -217,6 +217,43 @@ def _send_confirmation(capture_id: int, task_ids: list[int], model_used: str,
     db.finalize_capture(capture_id, model_used, ai_response, task_ids, bot_msg_id or 0)
 
 
+DIMENSIONS = ("urgency", "interest", "energy", "value")
+
+
+def _send_task_list(rows, header: str, thread_id: int | None) -> None:
+    if not rows:
+        tg.send_message(f"{header} (none)", thread_id)
+        return
+    lines = [header]
+    for r in rows:
+        tag = "✓ classified" if r["classification_complete"] else "unclassified"
+        cat = f" [{r['category']}]" if r["category"] else ""
+        dims = ""
+        if r["classification_complete"]:
+            dims = f" u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}"
+        lines.append(f"#{r['id']} {r['title']}{cat} ({tag}{dims})")
+    tg.send_message("\n".join(lines), thread_id)
+
+
+def _handle_tasks_command(args: list[str], thread_id: int | None) -> None:
+    if not args:
+        _send_task_list(db.get_all_tasks(), "Open tasks:", thread_id)
+        return
+    if args[0].lower() in DIMENSIONS:
+        dim = args[0].lower()
+        _send_task_list(db.get_all_tasks(order_by=dim), f"Open tasks by {dim} (high to low):", thread_id)
+        return
+    if args[0].lower() == "categories":
+        cats = db.get_distinct_categories()
+        if not cats:
+            tg.send_message("No categories yet.", thread_id)
+            return
+        tg.send_message("Categories:\n" + "\n".join(f"- {c}" for c in cats), thread_id)
+        return
+    category = " ".join(args)
+    _send_task_list(db.get_all_tasks(category=category), f"Tasks in \"{category}\":", thread_id)
+
+
 # ── command handling ─────────────────────────────────────────────────────
 
 def handle_command(text: str, thread_id: int | None) -> None:
@@ -233,6 +270,11 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "Reply to my confirmation message with corrections in plain English "
             "(\"delete the second one\", \"merge 1 and 3\").\n\n"
             "/tasks — list all open tasks\n"
+            "/tasks urgency|interest|energy|value — sorted by that dimension (high to low)\n"
+            "/tasks categories — list your categories\n"
+            "/tasks <category> — filter by category (e.g. /tasks kid stuff)\n"
+            "/unclassified — tasks still needing urgency/interest/energy/value\n"
+            "/category <id> <name> — set/override a task's category\n"
             "/delete <id> — delete a task by id\n"
             "/store — supply-store shopping list\n"
             "/online — online shopping list\n"
@@ -241,15 +283,17 @@ def handle_command(text: str, thread_id: int | None) -> None:
             thread_id,
         )
     elif cmd == "tasks":
-        rows = db.get_all_tasks()
-        if not rows:
-            tg.send_message("No open tasks.", thread_id)
+        _handle_tasks_command(args, thread_id)
+    elif cmd == "unclassified":
+        rows = [r for r in db.get_all_tasks() if not r["classification_complete"]]
+        _send_task_list(rows, "Unclassified tasks:", thread_id)
+    elif cmd == "category":
+        if len(args) < 2 or not args[0].isdigit():
+            tg.send_message("Usage: /category <task_id> <name>", thread_id)
             return
-        lines = ["Open tasks:"]
-        for r in rows:
-            tag = "✓ classified" if r["classification_complete"] else "unclassified"
-            lines.append(f"#{r['id']} {r['title']} ({tag})")
-        tg.send_message("\n".join(lines), thread_id)
+        task_id, name = int(args[0]), " ".join(args[1:])
+        db.update_task(task_id, category=name)
+        tg.send_message(f"#{task_id} category set to \"{name}\".", thread_id)
     elif cmd == "delete":
         if not args or not args[0].isdigit():
             tg.send_message("Usage: /delete <task_id>", thread_id)

@@ -121,6 +121,9 @@ def init() -> None:
     conn = _connect()
     try:
         conn.executescript(SCHEMA)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "category" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -156,13 +159,32 @@ def get_task(task_id: int) -> sqlite3.Row | None:
         conn.close()
 
 
-def get_all_tasks(exclude_status: tuple[str, ...] = ("done", "dropped")) -> list[sqlite3.Row]:
+def get_all_tasks(exclude_status: tuple[str, ...] = ("done", "dropped"),
+                   category: str | None = None, order_by: str = "id") -> list[sqlite3.Row]:
     conn = _connect()
     try:
         placeholders = ",".join("?" * len(exclude_status))
-        return conn.execute(
-            f"SELECT * FROM tasks WHERE status NOT IN ({placeholders}) ORDER BY id", exclude_status
+        query = f"SELECT * FROM tasks WHERE status NOT IN ({placeholders})"
+        params: list = list(exclude_status)
+        if category is not None:
+            query += " AND category LIKE ?"
+            params.append(f"%{category}%")
+        if order_by in ("urgency", "interest", "energy", "value"):
+            query += f" ORDER BY {order_by} DESC, id"
+        else:
+            query += " ORDER BY id"
+        return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+
+def get_distinct_categories() -> list[str]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT category FROM tasks WHERE category IS NOT NULL ORDER BY category"
         ).fetchall()
+        return [r["category"] for r in rows]
     finally:
         conn.close()
 

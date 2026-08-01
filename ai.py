@@ -111,6 +111,22 @@ def classify_task(title: str, description: str | None) -> dict:
     return {k: max(0, min(5, int(result.get(k, 0)))) for k in ("urgency", "interest", "energy", "value")}
 
 
+# ── Phase 1a+: category / life-aspect tagging ────────────────────────────
+
+CATEGORY_SYSTEM = """You tag a task with a short life-aspect category (e.g. "Kid stuff", "Wife",
+"Career", "Home", "Health", "Finances"). You are given the task and the person's existing
+categories — reuse one if it clearly fits, otherwise propose a short new one (2-3 words, title
+case). Respond with strict JSON only, no prose, no markdown fences: {"category": "..."}"""
+
+
+def guess_category(title: str, description: str | None, existing_categories: list[str]) -> str:
+    payload = {"task": title + (f"\n{description}" if description else ""),
+               "existing_categories": existing_categories}
+    result = _call(config.MODEL_HAIKU, CATEGORY_SYSTEM, [{"type": "text", "text": json.dumps(payload)}],
+                    max_tokens=64)
+    return result.get("category", "").strip()
+
+
 # ── Phase 1a: plan + supply list ─────────────────────────────────────────
 
 PLAN_SYSTEM = """You produce a short step-by-step plan and a tool/supply list for a task,

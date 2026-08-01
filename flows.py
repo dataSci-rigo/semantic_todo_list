@@ -19,7 +19,8 @@ ABBR_DIM = {v: k for k, v in DIM_ABBR.items()}
 
 def _classification_text(task_id: int) -> str:
     row = db.get_task(task_id)
-    return f"Classify #{task_id} {row['title']}:"
+    cat = f" [{row['category']}]" if row["category"] else ""
+    return f"Classify #{task_id} {row['title']}{cat}:\n(wrong category? /category {task_id} <name>)"
 
 
 def _classification_keyboard(task_id: int) -> dict:
@@ -44,6 +45,12 @@ def start_classification(task_id: int, thread_id: int | None) -> None:
         db.update_task(task_id, **guess)
     except Exception as e:
         print(f"  classify error: {e}")
+    try:
+        category = ai.guess_category(row["title"], row["description"], db.get_distinct_categories())
+        if category:
+            db.update_task(task_id, category=category)
+    except Exception as e:
+        print(f"  category guess error: {e}")
     tg.send_message(_classification_text(task_id), thread_id, reply_markup=_classification_keyboard(task_id))
 
 
