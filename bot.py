@@ -232,6 +232,7 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "urgency/interest/energy/value, skill level, and a supply checklist.\n"
             "Reply to my confirmation message with corrections in plain English "
             "(\"delete the second one\", \"merge 1 and 3\").\n\n"
+            "/tasks — list all open tasks\n"
             "/delete <id> — delete a task by id\n"
             "/store — supply-store shopping list\n"
             "/online — online shopping list\n"
@@ -239,6 +240,16 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "/help — show this message",
             thread_id,
         )
+    elif cmd == "tasks":
+        rows = db.get_all_tasks()
+        if not rows:
+            tg.send_message("No open tasks.", thread_id)
+            return
+        lines = ["Open tasks:"]
+        for r in rows:
+            tag = "✓ classified" if r["classification_complete"] else "unclassified"
+            lines.append(f"#{r['id']} {r['title']} ({tag})")
+        tg.send_message("\n".join(lines), thread_id)
     elif cmd == "delete":
         if not args or not args[0].isdigit():
             tg.send_message("Usage: /delete <task_id>", thread_id)
@@ -252,7 +263,11 @@ def handle_command(text: str, thread_id: int | None) -> None:
         if not items:
             tg.send_message(f"{list_name}: nothing on the list.", thread_id)
             return
-        lines = [f"{list_name}:"] + [f"- {i['canonical_name']}" for i in items]
+        # One row per (entity, task) — the same supply can be required by
+        # multiple tasks, which is correct for tracking, but should collapse
+        # to one line here rather than repeating the name per task.
+        names = list(dict.fromkeys(i["canonical_name"] for i in items))
+        lines = [f"{list_name}:"] + [f"- {n}" for n in names]
         tg.send_message("\n".join(lines), thread_id)
 
 

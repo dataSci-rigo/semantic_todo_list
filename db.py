@@ -156,6 +156,17 @@ def get_task(task_id: int) -> sqlite3.Row | None:
         conn.close()
 
 
+def get_all_tasks(exclude_status: tuple[str, ...] = ("done", "dropped")) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" * len(exclude_status))
+        return conn.execute(
+            f"SELECT * FROM tasks WHERE status NOT IN ({placeholders}) ORDER BY id", exclude_status
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 def get_tasks(task_ids: list[int]) -> list[sqlite3.Row]:
     if not task_ids:
         return []
