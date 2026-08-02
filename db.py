@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS shopping_list_items (
     created_at TEXT NOT NULL,
     UNIQUE(list_id, entity_id, task_id)
 );
+
+CREATE TABLE IF NOT EXISTS dependencies (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id            INTEGER NOT NULL REFERENCES tasks(id),
+    depends_on_task_id INTEGER REFERENCES tasks(id),
+    type               TEXT NOT NULL,
+    note               TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS availability_windows (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    duration_minutes INTEGER NOT NULL,
+    location         TEXT,
+    notes            TEXT,
+    raw_text         TEXT,
+    created_at       TEXT NOT NULL
+);
 """
 
 SUPPLY_STORE_LIST = "supply store run"
@@ -525,5 +543,49 @@ def mark_purchased(item_id: int) -> None:
     try:
         conn.execute("UPDATE shopping_list_items SET purchased = 1 WHERE id = ?", (item_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ── dependencies ──────────────────────────────────────────────────────────
+
+def create_dependency(task_id: int, depends_on_task_id: int | None, dep_type: str,
+                       note: str | None = None) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO dependencies (task_id, depends_on_task_id, type, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_id, depends_on_task_id, dep_type, note, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_dependencies_for_task(task_id: int) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM dependencies WHERE task_id = ?", (task_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+# ── availability windows ─────────────────────────────────────────────────
+
+def create_availability_window(duration_minutes: int, location: str | None,
+                                notes: str | None, raw_text: str) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO availability_windows (duration_minutes, location, notes, raw_text, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (duration_minutes, location, notes, raw_text, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid
     finally:
         conn.close()

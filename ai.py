@@ -127,6 +127,21 @@ def guess_category(title: str, description: str | None, existing_categories: lis
     return result.get("category", "").strip()
 
 
+# ── Phase 1b: availability window parsing ────────────────────────────────
+
+WINDOW_SYSTEM = """You parse a free-text description of an availability window into structured
+data for a task-matching engine. Respond with strict JSON only, no prose, no markdown fences:
+{"duration_minutes": number or null, "location": "..." or null, "notes": "..." or null}
+duration_minutes is how much active time the person actually has (e.g. "kid naps for 90 minutes"
+-> 90; "Sunday 9am-1pm" -> 240). location is a short place name if stated (e.g. "at home",
+"garage"), else null. notes captures any other constraint verbatim (e.g. "kid must stay asleep"),
+else null. If no duration can be determined, set duration_minutes to null."""
+
+
+def parse_window(text: str) -> dict:
+    return _call(config.MODEL_HAIKU, WINDOW_SYSTEM, [{"type": "text", "text": text}], max_tokens=256)
+
+
 # ── Phase 1a: plan + supply list ─────────────────────────────────────────
 
 PLAN_SYSTEM = """You produce a short step-by-step plan and a tool/supply list for a task,

@@ -16,6 +16,7 @@ import time
 
 import ai
 import config
+import context
 import db
 import flows
 import telegram_api as tg
@@ -254,6 +255,51 @@ def _handle_tasks_command(args: list[str], thread_id: int | None) -> None:
     _send_task_list(db.get_all_tasks(category=category), f"Tasks in \"{category}\":", thread_id)
 
 
+def _handle_dependency_command(args: list[str], thread_id: int | None) -> None:
+    if len(args) < 2 or not args[0].isdigit():
+        tg.send_message(
+            "Usage: /dependency <task_id> after <other_task_id>  — or —  "
+            "/dependency <task_id> <free-text constraint>",
+            thread_id,
+        )
+        return
+    task_id = int(args[0])
+    rest = args[1:]
+    if rest[0].lower() == "after" and len(rest) >= 2 and rest[1].isdigit():
+        other_id = int(rest[1])
+        db.create_dependency(task_id, other_id, "finish-to-start")
+        tg.send_message(f"#{task_id} now depends on #{other_id} finishing first.", thread_id)
+    else:
+        note = " ".join(rest)
+        db.create_dependency(task_id, None, "constraint", note=note)
+        tg.send_message(f"Constraint added to #{task_id}: {note}", thread_id)
+
+
+def _handle_window_command(text: str, thread_id: int | None) -> None:
+    try:
+        parsed = ai.parse_window(text)
+    except Exception as e:
+        tg.send_message(f"Couldn't parse that window: {e}", thread_id)
+        return
+    duration = parsed.get("duration_minutes")
+    if not duration:
+        tg.send_message(
+            "Couldn't figure out how much time that gives you — try including a number of minutes.",
+            thread_id,
+        )
+        return
+    location = parsed.get("location")
+    notes = parsed.get("notes")
+    db.create_availability_window(duration, location, notes, text)
+
+    rows = context.eligible_tasks(duration, location)
+    header = f"Eligible for {duration} min"
+    if location:
+        header += f" at {location}"
+    header += ":"
+    _send_task_list(rows, header, thread_id)
+
+
 # ── command handling ─────────────────────────────────────────────────────
 
 def handle_command(text: str, thread_id: int | None) -> None:
@@ -263,7 +309,7 @@ def handle_command(text: str, thread_id: int | None) -> None:
 
     if cmd == "help":
         tg.send_message(
-            "Semantic Task Manager (Phase 0 + 1a)\n\n"
+            "Semantic Task Manager (Phase 0 + 1a + 1b)\n\n"
             "Send text, a screenshot of a list, a photo of a situation, or a photo of a "
             "recipe/instructions — I'll save it as one or more tasks, then walk through "
             "urgency/interest/energy/value, skill level, and a supply checklist.\n"
@@ -279,6 +325,12 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "/store — supply-store shopping list\n"
             "/online — online shopping list\n"
             "/groceries — grocery list\n"
+            "/done <id> — mark a task done\n"
+            "/dependency <id> after <other_id> — block a task on another finishing\n"
+            "/dependency <id> <note> — attach a free-text constraint\n"
+            "/now <minutes> — what's eligible right now\n"
+            "/window <description> — e.g. \"kid naps for 90 minutes, at home\" — records the "
+            "window and shows what's eligible\n"
             "/help — show this message",
             thread_id,
         )
@@ -300,6 +352,28 @@ def handle_command(text: str, thread_id: int | None) -> None:
             return
         db.delete_task(int(args[0]))
         tg.send_message(f"Deleted #{args[0]}.", thread_id)
+    elif cmd == "done":
+        if not args or not args[0].isdigit():
+            tg.send_message("Usage: /done <task_id>", thread_id)
+            return
+        db.update_task(int(args[0]), status="done")
+        tg.send_message(f"#{args[0]} marked done ✓", thread_id)
+    elif cmd == "dependency":
+        _handle_dependency_command(args, thread_id)
+    elif cmd == "now":
+        if not args or not args[0].isdigit():
+            tg.send_message("Usage: /now <minutes> — e.g. /now 30", thread_id)
+            return
+        rows = context.eligible_tasks(int(args[0]))
+        _send_task_list(rows, f"Eligible for {args[0]} minutes:", thread_id)
+    elif cmd == "window":
+        if not args:
+            tg.send_message(
+                "Usage: /window <description> — e.g. /window kid naps for 90 minutes, at home",
+                thread_id,
+            )
+            return
+        _handle_window_command(" ".join(args), thread_id)
     elif cmd in ("store", "online", "groceries"):
         list_name = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
                      "groceries": db.GROCERY_LIST}[cmd]
