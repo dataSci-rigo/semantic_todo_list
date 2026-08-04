@@ -21,7 +21,14 @@ import db
 import flows
 import telegram_api as tg
 
+try:
+    import sync
+except ImportError as e:
+    sync = None
+    print(f"  Google Tasks sync unavailable (missing packages: {e}) — /sync and auto-sync disabled.")
+
 _offset = 0
+_last_sync = 0.0
 
 
 def row_to_task_dict(row) -> dict:
@@ -331,6 +338,7 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "/now <minutes> — what's eligible right now\n"
             "/window <description> — e.g. \"kid naps for 90 minutes, at home\" — records the "
             "window and shows what's eligible\n"
+            "/sync — sync now with Google Tasks\n"
             "/help — show this message",
             thread_id,
         )
@@ -374,6 +382,20 @@ def handle_command(text: str, thread_id: int | None) -> None:
             )
             return
         _handle_window_command(" ".join(args), thread_id)
+    elif cmd == "sync":
+        if sync is None:
+            tg.send_message("Google Tasks sync isn't installed — see oauth_setup.py / requirements.txt.",
+                             thread_id)
+            return
+        if not config.GOOGLE_TOKEN_PATH.exists():
+            tg.send_message(
+                "Google Tasks isn't authorized yet — run oauth_setup.py once, locally.", thread_id
+            )
+            return
+        sync.run_sync()
+        global _last_sync
+        _last_sync = time.time()
+        tg.send_message("Synced with Google Tasks.", thread_id)
     elif cmd in ("store", "online", "groceries"):
         list_name = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
                      "groceries": db.GROCERY_LIST}[cmd]
@@ -429,7 +451,7 @@ def process_update(update: dict) -> None:
 
 
 def main() -> None:
-    global _offset
+    global _offset, _last_sync
 
     if not config.TELEGRAM_TOKEN:
         raise ValueError("STM_BOT_ID not set in .env")
@@ -448,6 +470,12 @@ def main() -> None:
                 process_update(update)
             except Exception as e:
                 print(f"  error processing update: {e}")
+
+        if sync is not None and config.GOOGLE_TOKEN_PATH.exists() \
+                and time.time() - _last_sync > config.SYNC_INTERVAL_SECONDS:
+            sync.run_sync()
+            _last_sync = time.time()
+
         if not updates:
             time.sleep(1)
 

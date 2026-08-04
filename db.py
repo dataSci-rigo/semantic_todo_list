@@ -120,6 +120,14 @@ CREATE TABLE IF NOT EXISTS availability_windows (
     raw_text         TEXT,
     created_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS google_task_links (
+    task_id         INTEGER PRIMARY KEY REFERENCES tasks(id),
+    google_task_id  TEXT NOT NULL UNIQUE,
+    google_list_id  TEXT NOT NULL,
+    google_updated  TEXT,
+    last_synced_at  TEXT NOT NULL
+);
 """
 
 SUPPLY_STORE_LIST = "supply store run"
@@ -587,5 +595,73 @@ def create_availability_window(duration_minutes: int, location: str | None,
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+# ── google tasks sync links ──────────────────────────────────────────────
+
+def link_google_task(task_id: int, google_task_id: str, google_list_id: str,
+                      google_updated: str | None) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO google_task_links (task_id, google_task_id, google_list_id, google_updated, last_synced_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id) DO UPDATE SET google_task_id = excluded.google_task_id, "
+            "google_list_id = excluded.google_list_id, google_updated = excluded.google_updated, "
+            "last_synced_at = excluded.last_synced_at",
+            (task_id, google_task_id, google_list_id, google_updated, _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def touch_google_link(task_id: int, google_updated: str | None) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE google_task_links SET google_updated = ?, last_synced_at = ? WHERE task_id = ?",
+            (google_updated, _now(), task_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_link_by_task(task_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM google_task_links WHERE task_id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_link_by_google_id(google_task_id: str) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM google_task_links WHERE google_task_id = ?", (google_task_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_unlinked_tasks() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT t.* FROM tasks t LEFT JOIN google_task_links g ON g.task_id = t.id "
+            "WHERE g.task_id IS NULL AND t.status NOT IN ('dropped')"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_all_links() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM google_task_links").fetchall()
     finally:
         conn.close()
