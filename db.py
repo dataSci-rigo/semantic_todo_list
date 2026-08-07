@@ -150,6 +150,17 @@ def init() -> None:
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
         if "category" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT")
+
+        aw_cols = {row["name"] for row in conn.execute("PRAGMA table_info(availability_windows)")}
+        if "recurring" not in aw_cols:
+            conn.execute("ALTER TABLE availability_windows ADD COLUMN recurring INTEGER NOT NULL DEFAULT 0")
+        if "day_of_week" not in aw_cols:
+            conn.execute("ALTER TABLE availability_windows ADD COLUMN day_of_week INTEGER")
+        if "start_time" not in aw_cols:
+            conn.execute("ALTER TABLE availability_windows ADD COLUMN start_time TEXT")
+        if "last_notified_at" not in aw_cols:
+            conn.execute("ALTER TABLE availability_windows ADD COLUMN last_notified_at TEXT")
+
         conn.commit()
     finally:
         conn.close()
@@ -582,6 +593,19 @@ def get_dependencies_for_task(task_id: int) -> list[sqlite3.Row]:
         conn.close()
 
 
+def get_dependents(task_id: int) -> list[sqlite3.Row]:
+    """Tasks with a finish-to-start dependency on task_id — i.e. tasks that
+    were waiting on task_id to finish."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM dependencies WHERE depends_on_task_id = ? AND type = 'finish-to-start'",
+            (task_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 # ── availability windows ─────────────────────────────────────────────────
 
 def create_availability_window(duration_minutes: int, location: str | None,
@@ -595,6 +619,51 @@ def create_availability_window(duration_minutes: int, location: str | None,
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def create_recurring_window(day_of_week: int, start_time: str, duration_minutes: int,
+                             location: str | None, notes: str | None, raw_text: str) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO availability_windows "
+            "(duration_minutes, location, notes, raw_text, recurring, day_of_week, start_time, created_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (duration_minutes, location, notes, raw_text, day_of_week, start_time, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_recurring_windows() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM availability_windows WHERE recurring = 1").fetchall()
+    finally:
+        conn.close()
+
+
+def delete_availability_window(window_id: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM availability_windows WHERE id = ?", (window_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_window_notified(window_id: int, date_str: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE availability_windows SET last_notified_at = ? WHERE id = ?",
+            (date_str, window_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

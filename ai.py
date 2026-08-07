@@ -142,6 +142,21 @@ def parse_window(text: str) -> dict:
     return _call(config.MODEL_HAIKU, WINDOW_SYSTEM, [{"type": "text", "text": text}], max_tokens=256)
 
 
+RECURRING_WINDOW_SYSTEM = """You parse a free-text description of a RECURRING weekly availability
+window into structured data. Respond with strict JSON only, no prose, no markdown fences:
+{"day_of_week": 0-6 or null, "start_time": "HH:MM" or null, "duration_minutes": number or null,
+"location": "..." or null, "notes": "..." or null}
+day_of_week uses Monday=0 .. Sunday=6. start_time is 24-hour "HH:MM" for when the window begins
+(e.g. "every Sunday 9am for 4 hours" -> day_of_week 6, start_time "09:00", duration_minutes 240).
+If the text implies multiple days (e.g. "weekday mornings"), pick the single most representative
+day and note the rest in "notes" — this system only supports one day per recurring window.
+If day_of_week, start_time, or duration_minutes can't be determined, set it to null."""
+
+
+def parse_recurring_window(text: str) -> dict:
+    return _call(config.MODEL_HAIKU, RECURRING_WINDOW_SYSTEM, [{"type": "text", "text": text}], max_tokens=256)
+
+
 # ── Phase 1a: plan + supply list ─────────────────────────────────────────
 
 PLAN_SYSTEM = """You produce a short step-by-step plan and a tool/supply list for a task,

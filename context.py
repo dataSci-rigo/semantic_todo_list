@@ -22,9 +22,17 @@ def _dependencies_met(task_id: int) -> bool:
     return True
 
 
+def _score(row) -> int:
+    """Simple, adjustable ranking heuristic: favor urgent/valuable/interesting
+    tasks, mildly penalize ones that demand more energy. Unclassified fields
+    count as 0."""
+    return (row["urgency"] or 0) + (row["value"] or 0) + (row["interest"] or 0) - (row["energy"] or 0)
+
+
 def eligible_tasks(available_minutes: int, location: str | None = None) -> list:
     """location is accepted for display purposes only — no capture flow
-    currently populates location-type requirements, so it isn't filtered on."""
+    currently populates location-type requirements, so it isn't filtered on.
+    Results are ranked highest-score-first (see _score)."""
     eligible = []
     for row in db.get_all_tasks():
         if row["estimated_active_minutes"] is None:
@@ -36,4 +44,5 @@ def eligible_tasks(available_minutes: int, location: str | None = None) -> list:
         if not _dependencies_met(row["id"]):
             continue
         eligible.append(row)
+    eligible.sort(key=lambda r: (-_score(r), r["id"]))
     return eligible
