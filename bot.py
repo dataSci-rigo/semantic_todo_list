@@ -13,6 +13,8 @@ Run: python bot.py
 from __future__ import annotations
 
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import ai
 import config
@@ -29,6 +31,9 @@ except ImportError as e:
 
 _offset = 0
 _last_sync = 0.0
+_last_window_check = 0.0
+_TZ = ZoneInfo(config.TIMEZONE)
+DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 def row_to_task_dict(row) -> dict:
@@ -307,6 +312,66 @@ def _handle_window_command(text: str, thread_id: int | None) -> None:
     _send_task_list(rows, header, thread_id)
 
 
+def _handle_recurring_command(args: list[str], thread_id: int | None) -> None:
+    if not args:
+        tg.send_message(
+            "Usage: /recurring <description> — e.g. /recurring every Sunday 9am for 4 hours, at home\n"
+            "/recurring list — show saved recurring windows\n"
+            "/recurring delete <id> — remove one",
+            thread_id,
+        )
+        return
+
+    if args[0].lower() == "list":
+        rows = db.get_recurring_windows()
+        if not rows:
+            tg.send_message("No recurring windows saved.", thread_id)
+            return
+        lines = ["Recurring windows:"]
+        for r in rows:
+            loc = f" at {r['location']}" if r["location"] else ""
+            lines.append(
+                f"#{r['id']} {DAY_NAMES[r['day_of_week']]} {r['start_time']} "
+                f"for {r['duration_minutes']} min{loc}"
+            )
+        tg.send_message("\n".join(lines), thread_id)
+        return
+
+    if args[0].lower() == "delete":
+        if len(args) < 2 or not args[1].isdigit():
+            tg.send_message("Usage: /recurring delete <id>", thread_id)
+            return
+        db.delete_availability_window(int(args[1]))
+        tg.send_message(f"Deleted recurring window #{args[1]}.", thread_id)
+        return
+
+    text = " ".join(args)
+    try:
+        parsed = ai.parse_recurring_window(text)
+    except Exception as e:
+        tg.send_message(f"Couldn't parse that: {e}", thread_id)
+        return
+
+    day = parsed.get("day_of_week")
+    start_time = parsed.get("start_time")
+    duration = parsed.get("duration_minutes")
+    if day is None or not start_time or not duration:
+        tg.send_message(
+            "Couldn't pin down a day, start time, and duration from that — try something like "
+            "\"every Sunday 9am for 4 hours\".",
+            thread_id,
+        )
+        return
+
+    window_id = db.create_recurring_window(
+        day, start_time, duration, parsed.get("location"), parsed.get("notes"), text
+    )
+    tg.send_message(
+        f"Saved recurring window #{window_id}: {DAY_NAMES[day]} {start_time} for {duration} min.",
+        thread_id,
+    )
+
+
 # ── command handling ─────────────────────────────────────────────────────
 
 def handle_command(text: str, thread_id: int | None) -> None:
@@ -338,6 +403,10 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "/now <minutes> — what's eligible right now\n"
             "/window <description> — e.g. \"kid naps for 90 minutes, at home\" — records the "
             "window and shows what's eligible\n"
+            "/recurring <description> — e.g. \"every Sunday 9am for 4 hours\" — saves a weekly "
+            "window; I'll nudge you with what's eligible when it starts\n"
+            "/recurring list — show saved recurring windows\n"
+            "/recurring delete <id> — remove one\n"
             "/sync — sync now with Google Tasks\n"
             "/help — show this message",
             thread_id,
@@ -364,8 +433,10 @@ def handle_command(text: str, thread_id: int | None) -> None:
         if not args or not args[0].isdigit():
             tg.send_message("Usage: /done <task_id>", thread_id)
             return
-        db.update_task(int(args[0]), status="done")
+        task_id = int(args[0])
+        db.update_task(task_id, status="done")
         tg.send_message(f"#{args[0]} marked done ✓", thread_id)
+        _notify_unblocked(task_id, thread_id)
     elif cmd == "dependency":
         _handle_dependency_command(args, thread_id)
     elif cmd == "now":
@@ -382,6 +453,8 @@ def handle_command(text: str, thread_id: int | None) -> None:
             )
             return
         _handle_window_command(" ".join(args), thread_id)
+    elif cmd == "recurring":
+        _handle_recurring_command(args, thread_id)
     elif cmd == "sync":
         if sync is None:
             tg.send_message("Google Tasks sync isn't installed — see oauth_setup.py / requirements.txt.",
@@ -409,6 +482,37 @@ def handle_command(text: str, thread_id: int | None) -> None:
         names = list(dict.fromkeys(i["canonical_name"] for i in items))
         lines = [f"{list_name}:"] + [f"- {n}" for n in names]
         tg.send_message("\n".join(lines), thread_id)
+
+
+def _notify_unblocked(finished_task_id: int, thread_id: int | None) -> None:
+    for dep in db.get_dependents(finished_task_id):
+        task_id = dep["task_id"]
+        if not context.dependencies_met(task_id) or not context.requirements_satisfied(task_id):
+            continue
+        task = db.get_task(task_id)
+        if task is None or task["status"] in ("done", "dropped"):
+            continue
+        tg.send_message(f"✅ Unblocked: #{task_id} {task['title']} is now ready.", thread_id)
+
+
+def _check_recurring_windows() -> None:
+    now = datetime.now(_TZ)
+    today = now.strftime("%Y-%m-%d")
+    current_time = now.strftime("%H:%M")
+
+    for window in db.get_recurring_windows():
+        if window["day_of_week"] != now.weekday():
+            continue
+        if window["start_time"] != current_time:
+            continue
+        if window["last_notified_at"] == today:
+            continue
+
+        rows = context.eligible_tasks(window["duration_minutes"], window["location"])
+        loc_suffix = f", at {window['location']}" if window["location"] else ""
+        header = f"{DAY_NAMES[window['day_of_week']]} window ({window['duration_minutes']} min{loc_suffix}) — eligible:"
+        _send_task_list(rows, header, None)
+        db.mark_window_notified(window["id"], today)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────
@@ -451,7 +555,7 @@ def process_update(update: dict) -> None:
 
 
 def main() -> None:
-    global _offset, _last_sync
+    global _offset, _last_sync, _last_window_check
 
     if not config.TELEGRAM_TOKEN:
         raise ValueError("STM_BOT_ID not set in .env")
@@ -475,6 +579,13 @@ def main() -> None:
                 and time.time() - _last_sync > config.SYNC_INTERVAL_SECONDS:
             sync.run_sync()
             _last_sync = time.time()
+
+        if time.time() - _last_window_check > config.WINDOW_CHECK_INTERVAL_SECONDS:
+            try:
+                _check_recurring_windows()
+            except Exception as e:
+                print(f"  recurring window check error: {e}")
+            _last_window_check = time.time()
 
         if not updates:
             time.sleep(1)

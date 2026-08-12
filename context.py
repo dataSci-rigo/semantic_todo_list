@@ -8,12 +8,12 @@ from __future__ import annotations
 import db
 
 
-def _requirements_satisfied(task_id: int) -> bool:
+def requirements_satisfied(task_id: int) -> bool:
     reqs = db.get_requirements_for_task(task_id)
     return all(r["satisfied"] for r in reqs)
 
 
-def _dependencies_met(task_id: int) -> bool:
+def dependencies_met(task_id: int) -> bool:
     for dep in db.get_dependencies_for_task(task_id):
         if dep["type"] == "finish-to-start" and dep["depends_on_task_id"]:
             other = db.get_task(dep["depends_on_task_id"])
@@ -39,9 +39,9 @@ def eligible_tasks(available_minutes: int, location: str | None = None) -> list:
             continue
         if row["estimated_active_minutes"] > available_minutes:
             continue
-        if not _requirements_satisfied(row["id"]):
+        if not requirements_satisfied(row["id"]):
             continue
-        if not _dependencies_met(row["id"]):
+        if not dependencies_met(row["id"]):
             continue
         eligible.append(row)
     eligible.sort(key=lambda r: (-_score(r), r["id"]))

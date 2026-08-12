@@ -24,3 +24,6 @@ GOOGLE_TOKEN_PATH = Path(__file__).parent / "data" / "google_token.json"
 GOOGLE_TASKS_LIST_NAME = "Semantic Task Manager"
 GOOGLE_TASKS_SCOPES = ["https://www.googleapis.com/auth/tasks"]
 SYNC_INTERVAL_SECONDS = 10 * 60
+
+TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
+WINDOW_CHECK_INTERVAL_SECONDS = 60
