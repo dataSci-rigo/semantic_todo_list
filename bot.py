@@ -12,6 +12,7 @@ Run: python bot.py
 """
 from __future__ import annotations
 
+import html
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -21,6 +22,7 @@ import config
 import context
 import db
 import flows
+import storage_flows
 import telegram_api as tg
 
 try:
@@ -34,6 +36,11 @@ _last_sync = 0.0
 _last_window_check = 0.0
 _TZ = ZoneInfo(config.TIMEZONE)
 DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def esc(s) -> str:
+    """Escape dynamic text for parse_mode=HTML messages."""
+    return html.escape(str(s), quote=False)
 
 
 def row_to_task_dict(row) -> dict:
@@ -58,8 +65,7 @@ def handle_text_capture(text: str, message_id: int, thread_id: int | None) -> No
         for t in parsed
     ]
     _send_confirmation(capture_id, task_ids, config.MODEL_HAIKU, {"tasks": parsed}, thread_id)
-    for task_id in task_ids:
-        flows.start_classification(task_id, thread_id)
+    flows.start_classification_batch(task_ids, thread_id)
 
 
 def handle_photo_capture(msg: dict, thread_id: int | None) -> None:
@@ -87,8 +93,7 @@ def handle_photo_capture(msg: dict, thread_id: int | None) -> None:
             return
         task_ids = [db.create_task(t["title"], t.get("description"), "screenshot", message_id) for t in tasks]
         _send_confirmation(capture_id, task_ids, config.MODEL_SONNET, result, thread_id)
-        for task_id in task_ids:
-            flows.start_classification(task_id, thread_id)
+        flows.start_classification_batch(task_ids, thread_id)
 
     elif kind == "situation":
         candidates = result.get("candidates", [])
@@ -147,6 +152,22 @@ def handle_callback_query(cq: dict) -> None:
         return
     if prefix == "sub":
         flows.handle_substitution_callback(cq, int(parts[1]), int(parts[2]), parts[3])
+        return
+    if prefix == "stor":
+        storage_flows.handle_callback(cq, parts)
+        return
+    if prefix == "task":
+        _handle_task_callback(cq, parts)
+        return
+    if prefix == "undo":
+        _handle_undo_callback(cq, parts)
+        return
+    if prefix == "clsfstart":
+        thread_id = cq["message"].get("message_thread_id")
+        pending = [r["id"] for r in db.get_all_tasks() if not r["classification_complete"]]
+        tg.answer_callback_query(cq["id"])
+        if pending:
+            flows.start_classification_batch(pending, thread_id)
         return
     if prefix != "sit":
         return
@@ -212,8 +233,7 @@ def handle_correction(capture_row, instruction: str, thread_id: int | None) -> N
 
     final_ids = list(surviving) + new_ids
     _send_confirmation(capture_row["id"], final_ids, config.MODEL_HAIKU, ops, thread_id, prefix="Updated:\n")
-    for task_id in new_ids:
-        flows.start_classification(task_id, thread_id)
+    flows.start_classification_batch(new_ids, thread_id)
 
 
 def _send_confirmation(capture_id: int, task_ids: list[int], model_used: str,
@@ -221,36 +241,223 @@ def _send_confirmation(capture_id: int, task_ids: list[int], model_used: str,
     rows = db.get_tasks(task_ids)
     lines = []
     for r in rows:
-        line = f"#{r['id']} {r['title']}"
+        line = f"<code>#{r['id']}</code> <b>{esc(r['title'])}</b>"
         if r["description"]:
-            line += f"\n    ↳ {r['description']}"
+            line += f"\n    ↳ {esc(r['description'])}"
         lines.append(line)
-    text = prefix + ("\n".join(lines) if lines else "(nothing)")
-    bot_msg_id = tg.send_message(text, thread_id)
+    text = esc(prefix) + ("\n".join(lines) if lines else "(nothing)")
+    text += "\n\n<i>Reply to this message to correct.</i>"
+    kb = {"inline_keyboard": [[{"text": "↩️ Undo", "callback_data": f"undo:cap:{capture_id}"}]]} \
+        if task_ids else None
+    bot_msg_id = tg.send_message(text, thread_id, reply_markup=kb, parse_mode="HTML")
     db.finalize_capture(capture_id, model_used, ai_response, task_ids, bot_msg_id or 0)
 
 
 DIMENSIONS = ("urgency", "interest", "energy", "value")
 
 
+def _task_line(r) -> str:
+    cat = f" <i>[{esc(r['category'])}]</i>" if r["category"] else ""
+    if r["classification_complete"]:
+        meta = f" <i>u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}</i>"
+    else:
+        meta = " <i>(unclassified)</i>"
+    return f"<code>#{r['id']}</code> <b>{esc(r['title'])}</b>{cat}{meta}"
+
+
+def _task_buttons(rows) -> dict | None:
+    if not rows:
+        return None
+    btns = [{"text": f"#{r['id']} {r['title'][:28]}", "callback_data": f"task:{r['id']}"}
+            for r in rows]
+    per_row = 2 if len(btns) > 8 else 1
+    return {"inline_keyboard": [btns[i:i + per_row] for i in range(0, len(btns), per_row)]}
+
+
 def _send_task_list(rows, header: str, thread_id: int | None) -> None:
+    """Flat (rank-preserving) list with tap-to-open buttons."""
     if not rows:
         tg.send_message(f"{header} (none)", thread_id)
         return
-    lines = [header]
+    lines = [f"<b>{esc(header)}</b>"] + [_task_line(r) for r in rows]
+    tg.send_message("\n".join(lines), thread_id, reply_markup=_task_buttons(rows), parse_mode="HTML")
+
+
+def _build_task_hub() -> tuple[str, dict | None]:
+    """Grouped-by-category task overview with tap-to-open buttons."""
+    rows = db.get_all_tasks()
+    if not rows:
+        return "No open tasks. Send me anything to capture one.", None
+    groups: dict[str, list] = {}
     for r in rows:
-        tag = "✓ classified" if r["classification_complete"] else "unclassified"
-        cat = f" [{r['category']}]" if r["category"] else ""
-        dims = ""
-        if r["classification_complete"]:
-            dims = f" u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}"
-        lines.append(f"#{r['id']} {r['title']}{cat} ({tag}{dims})")
-    tg.send_message("\n".join(lines), thread_id)
+        groups.setdefault(r["category"] or "Uncategorized", []).append(r)
+    lines = ["<b>Your tasks</b>"]
+    for cat in sorted(groups, key=lambda c: (c == "Uncategorized", c.lower())):
+        lines.append(f"\n<u>{esc(cat)}</u>")
+        lines.extend(_task_line(r) for r in groups[cat])
+    lines.append("\n<i>Tap a task to manage it.</i>")
+    return "\n".join(lines), _task_buttons(rows)
+
+
+def _send_task_hub(thread_id: int | None) -> None:
+    text, kb = _build_task_hub()
+    tg.send_message(text, thread_id, reply_markup=kb, parse_mode="HTML")
+
+
+def _build_task_card(task_id: int, confirm_delete: bool = False) -> tuple[str, dict] | None:
+    r = db.get_task(task_id)
+    if r is None:
+        return None
+    status_icon = {"done": "✅", "dropped": "🗑"}.get(r["status"], "▫️")
+    lines = [f"{status_icon} <code>#{r['id']}</code> <b>{esc(r['title'])}</b>"]
+    if r["description"]:
+        lines.append(esc(r["description"]))
+    meta = []
+    if r["category"]:
+        meta.append(f"category: {esc(r['category'])}")
+    if r["classification_complete"]:
+        meta.append(f"u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}")
+    if r["skill_level_required"] is not None:
+        meta.append(f"skill {r['skill_level_required']}")
+    if r["estimated_active_minutes"] is not None:
+        est = f"{r['estimated_active_minutes']} min active"
+        if r["estimated_passive_minutes"]:
+            est += f" + {r['estimated_passive_minutes']} passive"
+        meta.append(est)
+    if meta:
+        lines.append("<i>" + " · ".join(meta) + "</i>")
+    reqs = db.get_requirements_for_task(task_id)
+    if reqs:
+        owned = sum(1 for q in reqs if q["satisfied"])
+        lines.append(f"<i>supplies: {owned}/{len(reqs)} ready</i>")
+
+    delete_btn = ({"text": "🗑 Really delete?", "callback_data": f"task:{task_id}:del2"}
+                  if confirm_delete else
+                  {"text": "🗑 Delete", "callback_data": f"task:{task_id}:del1"})
+    kb_rows = []
+    if r["status"] != "done":
+        kb_rows.append([{"text": "✓ Done", "callback_data": f"task:{task_id}:done"}, delete_btn])
+    else:
+        kb_rows.append([delete_btn])
+    kb_rows.append([{"text": "📦 Supplies", "callback_data": f"task:{task_id}:sup"},
+                    {"text": "✏️ Category", "callback_data": f"task:{task_id}:cat"}])
+    kb_rows.append([{"text": "⬅ Back", "callback_data": "task:hub"}])
+    return "\n".join(lines), {"inline_keyboard": kb_rows}
+
+
+def _mark_done_with_undo(task_id: int, thread_id: int | None) -> None:
+    task = db.get_task(task_id)
+    if task is None:
+        tg.send_message(f"No task #{task_id}.", thread_id)
+        return
+    prior = task["status"]
+    db.update_task(task_id, status="done")
+    kb = {"inline_keyboard": [[{"text": "↩️ Undo", "callback_data": f"undo:done:{task_id}:{prior}"}]]}
+    tg.send_message(f"✅ #{task_id} {task['title']} — done", thread_id, reply_markup=kb)
+    _notify_unblocked(task_id, thread_id)
+
+
+def _handle_task_callback(cq: dict, parts: list[str]) -> None:
+    message_id = cq["message"]["message_id"]
+    thread_id = cq["message"].get("message_thread_id")
+
+    if parts[1] == "hub":
+        text, kb = _build_task_hub()
+        tg.edit_message(message_id, text, reply_markup=kb or {"inline_keyboard": []}, parse_mode="HTML")
+        tg.answer_callback_query(cq["id"])
+        return
+
+    task_id = int(parts[1])
+    action = parts[2] if len(parts) > 2 else "open"
+
+    if action in ("open", "del1"):
+        card = _build_task_card(task_id, confirm_delete=(action == "del1"))
+        if card is None:
+            tg.answer_callback_query(cq["id"], "Task not found.")
+            return
+        tg.edit_message(message_id, card[0], reply_markup=card[1], parse_mode="HTML")
+        tg.answer_callback_query(cq["id"])
+
+    elif action == "done":
+        db.update_task(task_id, status="done")
+        card = _build_task_card(task_id)
+        if card:
+            tg.edit_message(message_id, card[0], reply_markup=card[1], parse_mode="HTML")
+        tg.answer_callback_query(cq["id"], "Done ✓")
+        _notify_unblocked(task_id, thread_id)
+
+    elif action == "del2":
+        db.delete_task(task_id)
+        tg.edit_message(message_id, f"🗑 Deleted #{task_id}.")
+        tg.answer_callback_query(cq["id"])
+
+    elif action == "sup":
+        reqs = db.get_requirements_for_task(task_id)
+        if not reqs:
+            tg.answer_callback_query(cq["id"], "No supplies listed for this task.")
+            return
+        lines = [f"📦 Supplies for <code>#{task_id}</code>:"]
+        for q in reqs:
+            icon = "✅" if q["satisfied"] else "🛒"
+            line = f"{icon} {esc(q['canonical_name'])}"
+            s = db.get_item_storage(q["entity_id"])
+            if s is not None:
+                if s["box_number"] is not None:
+                    line += f" — Box #{s['box_number']} @ {esc(s['location_name'] or '?')}"
+                elif s["location_name"]:
+                    line += f" — {esc(s['location_name'])}"
+            lines.append(line)
+        lines.append("<i>/find &lt;item&gt; for photos</i>")
+        tg.send_message("\n".join(lines), thread_id, parse_mode="HTML")
+        tg.answer_callback_query(cq["id"])
+
+    elif action == "cat":
+        cats = db.get_distinct_categories()
+        rows = [[{"text": c, "callback_data": f"task:{task_id}:setcat:{i}"}]
+                for i, c in enumerate(cats)]
+        rows.append([{"text": "⬅ Back", "callback_data": f"task:{task_id}"}])
+        tg.edit_message(message_id,
+                         f"Pick a category for #{task_id} (or type /category {task_id} <new name>):",
+                         reply_markup={"inline_keyboard": rows})
+        tg.answer_callback_query(cq["id"])
+
+    elif action == "setcat":
+        cats = db.get_distinct_categories()
+        idx = int(parts[3])
+        if idx < len(cats):
+            db.update_task(task_id, category=cats[idx])
+        card = _build_task_card(task_id)
+        if card:
+            tg.edit_message(message_id, card[0], reply_markup=card[1], parse_mode="HTML")
+        tg.answer_callback_query(cq["id"], "Category set.")
+
+
+def _handle_undo_callback(cq: dict, parts: list[str]) -> None:
+    import json
+    message_id = cq["message"]["message_id"]
+
+    if parts[1] == "cap":
+        cap = db.get_capture(int(parts[2]))
+        if cap is None:
+            tg.answer_callback_query(cq["id"], "Nothing to undo.")
+            return
+        task_ids = json.loads(cap["linked_task_ids"] or "[]")
+        for tid in task_ids:
+            db.delete_task(tid)
+        tg.edit_message(message_id, f"↩️ Undone — {len(task_ids)} task(s) removed.")
+        tg.answer_callback_query(cq["id"])
+
+    elif parts[1] == "done":
+        task_id = int(parts[2])
+        prior = parts[3] if len(parts) > 3 else "draft"
+        db.update_task(task_id, status=prior)
+        tg.edit_message(message_id, f"↩️ #{task_id} is open again.")
+        tg.answer_callback_query(cq["id"])
 
 
 def _handle_tasks_command(args: list[str], thread_id: int | None) -> None:
     if not args:
-        _send_task_list(db.get_all_tasks(), "Open tasks:", thread_id)
+        _send_task_hub(thread_id)
         return
     if args[0].lower() in DIMENSIONS:
         dim = args[0].lower()
@@ -372,6 +579,154 @@ def _handle_recurring_command(args: list[str], thread_id: int | None) -> None:
     )
 
 
+def _send_shopping_list(list_name: str, thread_id: int | None) -> None:
+    items = db.get_shopping_list_items(list_name)
+    if not items:
+        tg.send_message(f"🛒 {list_name}: nothing on the list.", thread_id)
+        return
+    # One row per (entity, task) — the same supply can be required by
+    # multiple tasks, which is correct for tracking, but should collapse
+    # to one line here rather than repeating the name per task.
+    names = list(dict.fromkeys(i["canonical_name"] for i in items))
+    lines = [f"🛒 {list_name}:"] + [f"- {n}" for n in names]
+    tg.send_message("\n".join(lines), thread_id)
+
+
+# ── natural-language routing ─────────────────────────────────────────────
+
+def _route_text(text: str, message_id: int, thread_id: int | None) -> None:
+    """Intent-route a free-text message; capture is the safe fallback so
+    nothing is ever lost."""
+    open_tasks = [{"id": r["id"], "title": r["title"]} for r in db.get_all_tasks()]
+    try:
+        route = ai.route_message(text, open_tasks)
+    except Exception as e:
+        print(f"  route error: {e}")
+        route = {"intent": "capture"}
+    intent = route.get("intent")
+
+    if intent == "eligible_query":
+        minutes = route.get("minutes")
+        if not minutes:
+            tg.send_message("How much time do you have? e.g. \"what can I do in 30 minutes\"", thread_id)
+            return
+        rows = context.eligible_tasks(int(minutes))
+        _send_task_list(rows, f"🧭 Eligible for {minutes} min:", thread_id)
+    elif intent == "shopping_list":
+        list_map = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
+                    "groceries": db.GROCERY_LIST}
+        chosen = route.get("list")
+        if chosen in list_map:
+            _send_shopping_list(list_map[chosen], thread_id)
+        else:
+            for name in list_map.values():
+                if db.get_shopping_list_items(name):
+                    _send_shopping_list(name, thread_id)
+    elif intent == "find_item" and route.get("query"):
+        _handle_find_command(route["query"].split(), thread_id)
+    elif intent == "mark_done" and route.get("task_ids"):
+        for task_id in route["task_ids"]:
+            _mark_done_with_undo(int(task_id), thread_id)
+    elif intent == "list_tasks":
+        _send_task_hub(thread_id)
+    elif intent == "correction_hint":
+        tg.send_message(
+            "To edit just-captured tasks, reply directly to my \"Saved:\" message with that "
+            "instruction — the reply tells me which capture you mean.",
+            thread_id,
+        )
+    else:
+        handle_text_capture(text, message_id, thread_id)
+
+
+# ── storage search & browse ──────────────────────────────────────────────
+
+def _send_storage_line(entity_id: int, thread_id: int | None) -> None:
+    s = db.get_item_storage(entity_id)
+    if s is None:
+        return
+    if s["box_number"] is not None:
+        where = f"Box #{s['box_number']} @ {s['location_name'] or 'location unknown'}"
+    else:
+        where = s["location_name"] or "location unknown"
+    lines = [f"🔎 {s['canonical_name']} — {where}"]
+    needed = db.get_tasks_requiring(entity_id)
+    if needed:
+        lines.append("needed by: " + ", ".join(f"#{t['id']} {t['title']}" for t in needed))
+    tg.send_message("\n".join(lines), thread_id)
+    if s["box_photo_file_id"]:
+        tg.send_photo(s["box_photo_file_id"], caption=f"Box #{s['box_number']} contents", thread_id=thread_id)
+    if s["location_photo_file_id"]:
+        tg.send_photo(s["location_photo_file_id"], caption=s["location_name"], thread_id=thread_id)
+
+
+def _handle_find_command(args: list[str], thread_id: int | None) -> None:
+    if not args:
+        tg.send_message("Usage: /find <what you're looking for> — or /find task <id>", thread_id)
+        return
+
+    if args[0].lower() == "task" and len(args) > 1 and args[1].isdigit():
+        task_id = int(args[1])
+        found = False
+        for req in db.get_requirements_for_task(task_id):
+            if db.get_item_storage(req["entity_id"]) is not None:
+                _send_storage_line(req["entity_id"], thread_id)
+                found = True
+        if not found:
+            tg.send_message(f"None of #{task_id}'s supplies have recorded storage yet.", thread_id)
+        return
+
+    stored = db.get_all_stored_items()
+    if not stored:
+        tg.send_message("Nothing stored yet — /box to catalog your first box.", thread_id)
+        return
+    items = [{"entity_id": r["entity_id"], "name": r["canonical_name"],
+              "aliases": db.get_aliases(r["entity_id"])} for r in stored]
+    query = " ".join(args)
+    try:
+        entity_ids = ai.match_stored_items(query, items)
+    except Exception as e:
+        tg.send_message(f"Search failed: {e}", thread_id)
+        return
+    if not entity_ids:
+        tg.send_message(f"No stored items match \"{query}\".", thread_id)
+        return
+    for entity_id in entity_ids:
+        _send_storage_line(entity_id, thread_id)
+
+
+def _handle_stuff_command(args: list[str], thread_id: int | None) -> None:
+    if args and args[0].lstrip("#").isdigit():
+        box = db.get_box_by_number(int(args[0].lstrip("#")))
+        if box is None:
+            tg.send_message(f"No box #{args[0].lstrip('#')}.", thread_id)
+            return
+        items = db.get_items_in_box(box["id"])
+        lines = [f"Box #{box['number']}" + (f" ({box['label']})" if box["label"] else "")
+                 + f" @ {box['location_name'] or 'location unknown'}:"]
+        lines += [f"- {i['canonical_name']}" for i in items] or ["(empty)"]
+        tg.send_message("\n".join(lines), thread_id)
+        if box["photo_file_id"]:
+            tg.send_photo(box["photo_file_id"], caption=f"Box #{box['number']} contents", thread_id=thread_id)
+        return
+
+    boxes = db.get_storage_boxes()
+    stored = db.get_all_stored_items()
+    if not boxes and not stored:
+        tg.send_message("Nothing stored yet — /box to catalog your first box.", thread_id)
+        return
+    lines = ["Your stuff:"]
+    for b in boxes:
+        count = len(db.get_items_in_box(b["id"]))
+        lines.append(f"Box #{b['number']}" + (f" ({b['label']})" if b["label"] else "")
+                     + f" @ {b['location_name'] or 'location unknown'} — {count} item(s)")
+    loose = [r for r in stored if r["box_number"] is None]
+    for r in loose:
+        lines.append(f"{r['canonical_name']} — loose @ {r['location_name'] or 'location unknown'}")
+    lines.append("\n/stuff <box#> to see a box's contents.")
+    tg.send_message("\n".join(lines), thread_id)
+
+
 # ── command handling ─────────────────────────────────────────────────────
 
 def handle_command(text: str, thread_id: int | None) -> None:
@@ -379,43 +734,35 @@ def handle_command(text: str, thread_id: int | None) -> None:
     cmd = parts[0].lstrip("/").split("@")[0].lower()
     args = parts[1:]
 
-    if cmd == "help":
+    if cmd in ("help", "start"):
         tg.send_message(
-            "Semantic Task Manager (Phase 0 + 1a + 1b)\n\n"
-            "Send text, a screenshot of a list, a photo of a situation, or a photo of a "
-            "recipe/instructions — I'll save it as one or more tasks, then walk through "
-            "urgency/interest/energy/value, skill level, and a supply checklist.\n"
-            "Reply to my confirmation message with corrections in plain English "
-            "(\"delete the second one\", \"merge 1 and 3\").\n\n"
-            "/tasks — list all open tasks\n"
-            "/tasks urgency|interest|energy|value — sorted by that dimension (high to low)\n"
-            "/tasks categories — list your categories\n"
-            "/tasks <category> — filter by category (e.g. /tasks kid stuff)\n"
-            "/unclassified — tasks still needing urgency/interest/energy/value\n"
-            "/category <id> <name> — set/override a task's category\n"
-            "/delete <id> — delete a task by id\n"
-            "/store — supply-store shopping list\n"
-            "/online — online shopping list\n"
-            "/groceries — grocery list\n"
-            "/done <id> — mark a task done\n"
-            "/dependency <id> after <other_id> — block a task on another finishing\n"
-            "/dependency <id> <note> — attach a free-text constraint\n"
-            "/now <minutes> — what's eligible right now\n"
-            "/window <description> — e.g. \"kid naps for 90 minutes, at home\" — records the "
-            "window and shows what's eligible\n"
-            "/recurring <description> — e.g. \"every Sunday 9am for 4 hours\" — saves a weekly "
-            "window; I'll nudge you with what's eligible when it starts\n"
-            "/recurring list — show saved recurring windows\n"
-            "/recurring delete <id> — remove one\n"
-            "/sync — sync now with Google Tasks\n"
-            "/help — show this message",
-            thread_id,
+            "<b>Semantic Task Manager</b>\n\n"
+            "Mostly, just talk to me — no commands needed:\n"
+            "• <i>\"caulk the bathroom sink\"</i> → saved as a task\n"
+            "• a screenshot of a list, photo of a situation, or a recipe → tasks\n"
+            "• <i>\"what can I do in 30 minutes?\"</i> → ranked, ready-to-go tasks\n"
+            "• <i>\"I'm going to Home Depot\"</i> → your store list\n"
+            "• <i>\"where are my snowshoes?\"</i> → box + location, with photos\n"
+            "• <i>\"6 is done\"</i> → marks it done (with Undo)\n"
+            "• reply to any \"Saved:\" message to correct it in plain English\n\n"
+            "Putting stuff away: /box → photo of the contents → I catalog it, "
+            "number the box, and remember where it lives. /loose for un-boxed items.\n\n"
+            "The / menu lists every command (tap the / button). The precision "
+            "versions still work: /tasks (sort: /tasks urgency · filter: /tasks kid stuff), "
+            "/now, /window, /recurring, /find, /stuff, /store /online /groceries, "
+            "/done /delete /category /dependency <code>id</code>, /unclassified, /sync, /cancel.",
+            thread_id, parse_mode="HTML",
         )
     elif cmd == "tasks":
         _handle_tasks_command(args, thread_id)
     elif cmd == "unclassified":
         rows = [r for r in db.get_all_tasks() if not r["classification_complete"]]
-        _send_task_list(rows, "Unclassified tasks:", thread_id)
+        if not rows:
+            tg.send_message("Nothing unclassified 🎉", thread_id)
+            return
+        lines = ["<b>Unclassified tasks:</b>"] + [_task_line(r) for r in rows]
+        kb = {"inline_keyboard": [[{"text": "▶️ Classify now", "callback_data": "clsfstart"}]]}
+        tg.send_message("\n".join(lines), thread_id, reply_markup=kb, parse_mode="HTML")
     elif cmd == "category":
         if len(args) < 2 or not args[0].isdigit():
             tg.send_message("Usage: /category <task_id> <name>", thread_id)
@@ -433,10 +780,7 @@ def handle_command(text: str, thread_id: int | None) -> None:
         if not args or not args[0].isdigit():
             tg.send_message("Usage: /done <task_id>", thread_id)
             return
-        task_id = int(args[0])
-        db.update_task(task_id, status="done")
-        tg.send_message(f"#{args[0]} marked done ✓", thread_id)
-        _notify_unblocked(task_id, thread_id)
+        _mark_done_with_undo(int(args[0]), thread_id)
     elif cmd == "dependency":
         _handle_dependency_command(args, thread_id)
     elif cmd == "now":
@@ -455,6 +799,15 @@ def handle_command(text: str, thread_id: int | None) -> None:
         _handle_window_command(" ".join(args), thread_id)
     elif cmd == "recurring":
         _handle_recurring_command(args, thread_id)
+    elif cmd in ("box", "loose"):
+        storage_flows.start_ingest(cmd, thread_id)
+    elif cmd == "find":
+        _handle_find_command(args, thread_id)
+    elif cmd == "stuff":
+        _handle_stuff_command(args, thread_id)
+    elif cmd == "cancel":
+        msg = storage_flows.cancel()
+        tg.send_message(msg or "Nothing to cancel.", thread_id)
     elif cmd == "sync":
         if sync is None:
             tg.send_message("Google Tasks sync isn't installed — see oauth_setup.py / requirements.txt.",
@@ -472,16 +825,7 @@ def handle_command(text: str, thread_id: int | None) -> None:
     elif cmd in ("store", "online", "groceries"):
         list_name = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
                      "groceries": db.GROCERY_LIST}[cmd]
-        items = db.get_shopping_list_items(list_name)
-        if not items:
-            tg.send_message(f"{list_name}: nothing on the list.", thread_id)
-            return
-        # One row per (entity, task) — the same supply can be required by
-        # multiple tasks, which is correct for tracking, but should collapse
-        # to one line here rather than repeating the name per task.
-        names = list(dict.fromkeys(i["canonical_name"] for i in items))
-        lines = [f"{list_name}:"] + [f"- {n}" for n in names]
-        tg.send_message("\n".join(lines), thread_id)
+        _send_shopping_list(list_name, thread_id)
 
 
 def _notify_unblocked(finished_task_id: int, thread_id: int | None) -> None:
@@ -539,6 +883,9 @@ def process_update(update: dict) -> None:
 
     if reply_to:
         reply_id = reply_to["message_id"]
+        if storage_flows.wants_reply(reply_id):
+            storage_flows.handle_reply(text, thread_id)
+            return
         cap = db.find_capture_by_awaiting_other(reply_id)
         if cap is not None:
             handle_other_reply(cap, text, thread_id)
@@ -549,9 +896,12 @@ def process_update(update: dict) -> None:
             return
 
     if msg.get("photo"):
-        handle_photo_capture(msg, thread_id)
+        if storage_flows.wants_photo():
+            storage_flows.handle_photo(msg, thread_id)
+        else:
+            handle_photo_capture(msg, thread_id)
     elif text:
-        handle_text_capture(text, msg["message_id"], thread_id)
+        _route_text(text, msg["message_id"], thread_id)
 
 
 def main() -> None:
@@ -565,7 +915,24 @@ def main() -> None:
         raise ValueError("ANTHROPIC_API_KEY not set in .env")
 
     db.init()
-    print("Semantic task manager started (Phase 0 capture).")
+    tg.set_my_commands([
+        ("tasks", "Your tasks — tap one to manage it"),
+        ("now", "What can I do right now? e.g. /now 30"),
+        ("find", "Where is my …? e.g. /find snowgear"),
+        ("stuff", "Browse boxes and storage locations"),
+        ("box", "Put a box away: photo → cataloged"),
+        ("loose", "Put un-boxed items away"),
+        ("store", "Supply-store shopping list"),
+        ("online", "Online shopping list"),
+        ("groceries", "Grocery list"),
+        ("window", "One-off free-time window, e.g. kid naps 90 min"),
+        ("recurring", "Weekly window — I nudge you when it starts"),
+        ("unclassified", "Tasks still waiting on classification"),
+        ("sync", "Sync with Google Tasks now"),
+        ("cancel", "Abandon the current flow"),
+        ("help", "What can I send you?"),
+    ])
+    print("Semantic task manager started.")
 
     while True:
         updates = tg.get_updates(_offset)

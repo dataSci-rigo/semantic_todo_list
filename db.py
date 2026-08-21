@@ -128,6 +128,30 @@ CREATE TABLE IF NOT EXISTS google_task_links (
     google_updated  TEXT,
     last_synced_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS storage_locations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    photo_file_id TEXT,
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_boxes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    number        INTEGER NOT NULL UNIQUE,
+    label         TEXT,
+    photo_file_id TEXT,
+    location_id   INTEGER REFERENCES storage_locations(id),
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS item_storage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id   INTEGER NOT NULL REFERENCES entities(id),
+    box_id      INTEGER REFERENCES storage_boxes(id),
+    location_id INTEGER REFERENCES storage_locations(id),
+    created_at  TEXT NOT NULL
+);
 """
 
 SUPPLY_STORE_LIST = "supply store run"
@@ -732,5 +756,208 @@ def get_all_links() -> list[sqlite3.Row]:
     conn = _connect()
     try:
         return conn.execute("SELECT * FROM google_task_links").fetchall()
+    finally:
+        conn.close()
+
+
+# ── storage tracker (boxes, locations, item placement) ───────────────────
+
+def create_storage_location(name: str, photo_file_id: str | None) -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO storage_locations (name, photo_file_id, created_at) VALUES (?, ?, ?)",
+            (name, photo_file_id, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_storage_locations() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT * FROM storage_locations ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+def get_storage_location(location_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM storage_locations WHERE id = ?", (location_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def rename_storage_location(location_id: int, name: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute("UPDATE storage_locations SET name = ? WHERE id = ?", (name, location_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_storage_box(photo_file_id: str | None, location_id: int | None,
+                        label: str | None = None) -> int:
+    """Auto-assigns the next box number (max+1) so it matches a number the
+    user writes on the physical box. Returns the box row id."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM storage_boxes").fetchone()
+        cur = conn.execute(
+            "INSERT INTO storage_boxes (number, label, photo_file_id, location_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row["n"], label, photo_file_id, location_id, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_storage_boxes() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT b.*, l.name AS location_name FROM storage_boxes b "
+            "LEFT JOIN storage_locations l ON l.id = b.location_id ORDER BY b.number"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_box(box_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT b.*, l.name AS location_name, l.photo_file_id AS location_photo_file_id "
+            "FROM storage_boxes b LEFT JOIN storage_locations l ON l.id = b.location_id "
+            "WHERE b.id = ?", (box_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_box_by_number(number: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT b.*, l.name AS location_name, l.photo_file_id AS location_photo_file_id "
+            "FROM storage_boxes b LEFT JOIN storage_locations l ON l.id = b.location_id "
+            "WHERE b.number = ?", (number,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def set_box_location(box_id: int, location_id: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute("UPDATE storage_boxes SET location_id = ? WHERE id = ?", (location_id, box_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def store_item(entity_id: int, box_id: int | None, location_id: int | None) -> None:
+    """Record where an item lives. Replaces any previous placement of the
+    same entity — an item has one home at a time."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM item_storage WHERE entity_id = ?", (entity_id,))
+        conn.execute(
+            "INSERT INTO item_storage (entity_id, box_id, location_id, created_at) VALUES (?, ?, ?, ?)",
+            (entity_id, box_id, location_id, _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_item_storage(entity_id: int) -> sqlite3.Row | None:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT s.*, e.canonical_name, b.number AS box_number, b.label AS box_label, "
+            "b.photo_file_id AS box_photo_file_id, "
+            "COALESCE(bl.id, dl.id) AS resolved_location_id, "
+            "COALESCE(bl.name, dl.name) AS location_name, "
+            "COALESCE(bl.photo_file_id, dl.photo_file_id) AS location_photo_file_id "
+            "FROM item_storage s "
+            "JOIN entities e ON e.id = s.entity_id "
+            "LEFT JOIN storage_boxes b ON b.id = s.box_id "
+            "LEFT JOIN storage_locations bl ON bl.id = b.location_id "
+            "LEFT JOIN storage_locations dl ON dl.id = s.location_id "
+            "WHERE s.entity_id = ?", (entity_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_items_in_box(box_id: int) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT s.*, e.canonical_name FROM item_storage s "
+            "JOIN entities e ON e.id = s.entity_id WHERE s.box_id = ? ORDER BY e.canonical_name",
+            (box_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_all_stored_items() -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT s.entity_id, e.canonical_name, b.number AS box_number, b.label AS box_label, "
+            "COALESCE(bl.name, dl.name) AS location_name "
+            "FROM item_storage s "
+            "JOIN entities e ON e.id = s.entity_id "
+            "LEFT JOIN storage_boxes b ON b.id = s.box_id "
+            "LEFT JOIN storage_locations bl ON bl.id = b.location_id "
+            "LEFT JOIN storage_locations dl ON dl.id = s.location_id "
+            "ORDER BY e.canonical_name"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_tasks_requiring(entity_id: int) -> list[sqlite3.Row]:
+    """Open tasks that list this entity as a requirement."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT t.* FROM tasks t JOIN task_requirements tr ON tr.task_id = t.id "
+            "WHERE tr.entity_id = ? AND t.status NOT IN ('done', 'dropped') ORDER BY t.id",
+            (entity_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def add_entity_alias(entity_id: int, alias: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
+            (entity_id, alias.strip().lower()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_aliases(entity_id: int) -> list[str]:
+    conn = _connect()
+    try:
+        return [r["alias"] for r in conn.execute(
+            "SELECT alias FROM entity_aliases WHERE entity_id = ?", (entity_id,)
+        ).fetchall()]
     finally:
         conn.close()

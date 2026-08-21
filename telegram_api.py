@@ -26,12 +26,14 @@ def get_updates(offset: int, timeout: int = 30) -> list[dict]:
 
 
 def send_message(text: str, thread_id: int | None = None,
-                  reply_markup: dict | None = None) -> int | None:
+                  reply_markup: dict | None = None, parse_mode: str | None = None) -> int | None:
     payload: dict = {"chat_id": config.CHAT_ID, "text": text}
     if thread_id:
         payload["message_thread_id"] = thread_id
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         resp = requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10)
         data = resp.json()
@@ -43,10 +45,34 @@ def send_message(text: str, thread_id: int | None = None,
     return None
 
 
-def edit_message(message_id: int, text: str, reply_markup: dict | None = None) -> None:
+def send_photo(file_id: str, caption: str | None = None, thread_id: int | None = None,
+                reply_markup: dict | None = None) -> int | None:
+    """Re-send a photo Telegram already hosts, by its file_id."""
+    payload: dict = {"chat_id": config.CHAT_ID, "photo": file_id}
+    if caption:
+        payload["caption"] = caption
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        resp = requests.post(f"{_BASE_URL}/sendPhoto", json=payload, timeout=15)
+        data = resp.json()
+        if data.get("ok"):
+            return data["result"]["message_id"]
+        print(f"  sendPhoto failed: {data}")
+    except Exception as e:
+        print(f"  send_photo error: {e}")
+    return None
+
+
+def edit_message(message_id: int, text: str, reply_markup: dict | None = None,
+                  parse_mode: str | None = None) -> None:
     payload: dict = {"chat_id": config.CHAT_ID, "message_id": message_id, "text": text}
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         resp = requests.post(f"{_BASE_URL}/editMessageText", json=payload, timeout=10)
         data = resp.json()
@@ -54,6 +80,18 @@ def edit_message(message_id: int, text: str, reply_markup: dict | None = None) -
             print(f"  editMessageText failed: {data}")
     except Exception as e:
         print(f"  edit error: {e}")
+
+
+def set_my_commands(commands: list[tuple[str, str]]) -> None:
+    """Register the '/' autocomplete menu. commands = [(name, description), ...]"""
+    payload = {"commands": [{"command": c, "description": d} for c, d in commands]}
+    try:
+        resp = requests.post(f"{_BASE_URL}/setMyCommands", json=payload, timeout=10)
+        data = resp.json()
+        if not data.get("ok"):
+            print(f"  setMyCommands failed: {data}")
+    except Exception as e:
+        print(f"  setMyCommands error: {e}")
 
 
 def answer_callback_query(callback_query_id: str, text: str | None = None) -> None:

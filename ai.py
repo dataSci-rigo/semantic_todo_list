@@ -222,3 +222,113 @@ def propose_substitution(missing_ingredient: str, recipe: dict, inventory_names:
     result = _call(config.MODEL_HAIKU, SUBSTITUTION_SYSTEM, [{"type": "text", "text": json.dumps(payload)}],
                     max_tokens=256)
     return result.get("substitute", "")
+
+
+# ── storage tracker: vision ingest + search matching ─────────────────────
+
+def _image_content(image_bytes: bytes, prompt: str, media_type: str = "image/jpeg") -> list[dict]:
+    import base64
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    return [
+        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+        {"type": "text", "text": prompt},
+    ]
+
+
+IDENTIFY_ITEMS_SYSTEM = """You catalog the contents of a storage box (or a single item) from a
+photo, for a personal where-is-my-stuff tracker. List every distinct, individually-storable
+item you can identify — not packaging, background objects, the box itself, or the surface it
+sits on. Use short specific names, including brand when clearly visible (e.g. "Fanttik electric
+screwdriver", not "tool"). For each item add 2-4 short lowercase topic tags a person might
+search by later (e.g. snowshoes -> ["snowgear", "winter", "hiking"]). Respond with strict JSON
+only, no prose, no markdown fences:
+{"items": [{"name": "...", "topics": ["...", "..."]}]}"""
+
+
+def identify_items_in_photo(image_bytes: bytes, media_type: str = "image/jpeg") -> list[dict]:
+    result = _call(config.MODEL_SONNET, IDENTIFY_ITEMS_SYSTEM,
+                    _image_content(image_bytes, "Catalog the items in this photo.", media_type),
+                    max_tokens=1536)
+    return result.get("items", [])
+
+
+NAME_LOCATION_SYSTEM = """You name a storage location from a photo, for a personal
+where-is-my-stuff tracker. Produce a short, distinctive place name a person would recognize
+("white shelves in bedroom", "garage wall pegboard", "hall closet top shelf"). Respond with
+strict JSON only, no prose, no markdown fences: {"name": "..."}"""
+
+
+def name_location_from_photo(image_bytes: bytes, media_type: str = "image/jpeg") -> str:
+    result = _call(config.MODEL_SONNET, NAME_LOCATION_SYSTEM,
+                    _image_content(image_bytes, "Name this storage location.", media_type),
+                    max_tokens=128)
+    return result.get("name", "").strip()
+
+
+MATCH_ITEMS_SYSTEM = """You match a free-text search query against a person's stored-item list.
+You are given the query and the items (entity_id, name, aliases). Return every item that
+plausibly matches the query — by name, synonym, category, or purpose (e.g. query "snowgear"
+matches snowshoes; "screwdrivers" matches an electric screwdriver set). Respond with strict
+JSON only, no prose, no markdown fences: {"entity_ids": [1, 2]}
+Return an empty list if nothing matches. Do not invent ids."""
+
+
+def match_stored_items(query: str, items: list[dict]) -> list[int]:
+    payload = {"query": query, "items": items}
+    result = _call(config.MODEL_HAIKU, MATCH_ITEMS_SYSTEM,
+                    [{"type": "text", "text": json.dumps(payload)}], max_tokens=512)
+    return [i for i in result.get("entity_ids", []) if isinstance(i, int)]
+
+
+ITEM_LIST_CORRECTION_SYSTEM = """You apply a natural-language correction to a list of items
+identified in a storage-box photo, before they are saved. You are given the current items
+(1-indexed position, name, topics) and an instruction (e.g. "the second one is a Makita drill,
+delete the last one, add ski gloves"). Respond with the FULL corrected list as strict JSON
+only, no prose, no markdown fences: {"items": [{"name": "...", "topics": ["..."]}]}
+Keep unmentioned items unchanged. Keep or sensibly update topics for edited items."""
+
+
+def correct_item_list(items: list[dict], instruction: str) -> list[dict]:
+    payload = {"items": [{"position": i + 1, **it} for i, it in enumerate(items)],
+               "instruction": instruction}
+    result = _call(config.MODEL_HAIKU, ITEM_LIST_CORRECTION_SYSTEM,
+                    [{"type": "text", "text": json.dumps(payload)}], max_tokens=1536)
+    return result.get("items", [])
+
+
+# ── natural-language intent router ───────────────────────────────────────
+
+ROUTE_SYSTEM = """You route a free-text message sent to a personal task-manager bot into one
+intent. The user's open tasks (id, title) are provided for reference resolution. Respond with
+strict JSON only, no prose, no markdown fences:
+{"intent": "...", "minutes": number or null, "list": "store"|"online"|"groceries" or null,
+ "query": "..." or null, "task_ids": [..] or null}
+
+Intents:
+- "capture": the message describes something to do — a new task or several ("buy milk and call
+  the dentist", "caulk the sink"). THIS IS THE DEFAULT: when the message doesn't clearly fit
+  another intent, choose capture — nothing is ever lost by saving it as a task.
+- "eligible_query": asking what they can/should do with some amount of time ("what can I do in
+  30 min", "I have an hour, what should I work on"). Set minutes (convert hours).
+- "shopping_list": about to go shopping / asking what to buy ("I'm going to Home Depot",
+  "heading to the hardware store" -> list "store"; "grocery run", "at the supermarket" ->
+  "groceries"; "ordering online" -> "online"). Set list.
+- "find_item": asking where a physical thing is stored ("where are my snowshoes", "which box
+  has the screwdrivers"). Set query to the thing sought.
+- "mark_done": reporting a task is finished ("6 is done", "#12 done", "finished the caulking
+  one"). Resolve against the open-task list and set task_ids. If you cannot confidently
+  resolve which task, use capture instead.
+- "list_tasks": asking to see their tasks ("show my tasks", "what's on my list").
+- "correction_hint": an edit instruction about just-captured tasks sent as a NEW message
+  instead of a reply ("merge 1 and 4", "delete the second one", "the third one should say X").
+  Do not guess task_ids here; the bot will explain how to reply-correct."""
+
+
+def route_message(text: str, open_tasks: list[dict]) -> dict:
+    payload = {"message": text, "open_tasks": open_tasks}
+    result = _call(config.MODEL_HAIKU, ROUTE_SYSTEM,
+                    [{"type": "text", "text": json.dumps(payload)}], max_tokens=256)
+    if result.get("intent") not in ("capture", "eligible_query", "shopping_list", "find_item",
+                                     "mark_done", "list_tasks", "correction_hint"):
+        result["intent"] = "capture"
+    return result

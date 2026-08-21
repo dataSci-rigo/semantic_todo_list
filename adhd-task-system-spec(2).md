@@ -60,6 +60,16 @@ The "what can I do right now" layer. User states an availability window or asks 
 
 Details deliberately deferred to 1b planning: ranking among eligible tasks, recurring windows, notification/nudge behavior, and how passive-blocking tasks reserve a location.
 
+## Storage subsystem (added 2026-08-12, not in the original spec)
+
+The "where's my stuff" tracker: items are the same supply entities as everywhere else, so task linkage is a join, not a feature. Photo-first ingest — the user photographs, the AI names.
+
+**Data:** storage_locations (name AI-derived from a photo, e.g. "white shelves in bedroom"; photo kept), storage_boxes (auto-assigned sequential number matching a number written on the physical box; optional label; the contents photo; location), item_storage (entity → box or directly → location for loose items; one home per item, re-storing replaces). Photos are Telegram file_ids only — re-sendable in chat forever, no disk storage, no compression concerns.
+
+**Ingest (/box, /loose):** send a photo of box contents → Sonnet vision lists every distinct storable item with 2–4 topic tags → reply-to-correct or one-tap confirm → pick an existing box or create one (auto-numbered) → pick an existing location or send a photo of the place, which Sonnet names → items normalize to supply entities (deduped against the whole system), topic tags and original names (with brands) land in entity_aliases, and inventory flips on_hand — storing something is proof you own it, which feeds the existing checklist/shopping logic.
+
+**Search:** /find <query> Haiku-matches free text against names + aliases ("snowgear" finds snowshoes; "fanttik" finds it via the brand alias) and answers with item → Box #n @ location plus the stored box-contents and location photos; any open task requiring a found item is shown ("needed by: #12 …"). /find task <id> answers "where are that task's supplies". /stuff browses boxes and loose items; /stuff <n> shows one box's contents and photo.
+
 ## Non-goals (for now)
 
 Phase 2 goal/aspect decomposition (the schema anticipates it via parent_task_id and a future goals table, but nothing more), multi-user support, calendar integration, and any local OCR engine — vision API is the pipeline; Tesseract is a cost optimization to revisit only if screenshot volume makes it worthwhile.

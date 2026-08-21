@@ -16,11 +16,22 @@ ABBR_DIM = {v: k for k, v in DIM_ABBR.items()}
 
 
 # ── classification (urgency / interest / energy / value) ─────────────────
+#
+# Multi-task captures classify one task at a time (sequential queue) instead
+# of flooding the chat with one card per task. Explicit ✓ per task is kept
+# by design; "Later" abandons the queue — tasks stay unclassified and
+# /unclassified surfaces them.
+
+_clsf_batch: dict | None = None  # {"queue": [ids], "total": n, "done": k}
+
 
 def _classification_text(task_id: int) -> str:
     row = db.get_task(task_id)
     cat = f" [{row['category']}]" if row["category"] else ""
-    return f"Classify #{task_id} {row['title']}{cat}:\n(wrong category? /category {task_id} <name>)"
+    header = ""
+    if _clsf_batch and _clsf_batch["total"] > 1:
+        header = f"Classify ({_clsf_batch['done'] + 1} of {_clsf_batch['total']})\n"
+    return f"{header}#{task_id} {row['title']}{cat}"
 
 
 def _classification_keyboard(task_id: int) -> dict:
@@ -29,17 +40,46 @@ def _classification_keyboard(task_id: int) -> dict:
     for dim in DIMS:
         abbr = DIM_ABBR[dim]
         val = row[dim] or 0
-        rows.append([
-            {"text": "-", "callback_data": f"clsf:{task_id}:{abbr}:-1"},
-            {"text": f"{dim.capitalize()}: {val}", "callback_data": "noop"},
-            {"text": "+", "callback_data": f"clsf:{task_id}:{abbr}:1"},
-        ])
-    rows.append([{"text": "✓ Looks good", "callback_data": f"clsf:{task_id}:go:0"}])
+        buttons = [{"text": dim.capitalize()[:3], "callback_data": "noop"}]
+        for v in range(6):
+            label = f"·{v}·" if v == val else str(v)
+            buttons.append({"text": label, "callback_data": f"clsf:{task_id}:{abbr}:{v}"})
+        rows.append(buttons)
+    rows.append([
+        {"text": "✓ Looks good", "callback_data": f"clsf:{task_id}:go:0"},
+        {"text": "Later", "callback_data": f"clsf:{task_id}:later:0"},
+    ])
     return {"inline_keyboard": rows}
 
 
+def start_classification_batch(task_ids: list[int], thread_id: int | None) -> None:
+    """Queue tasks for one-at-a-time classification. If a batch is already
+    active, extend it rather than interleaving cards."""
+    global _clsf_batch
+    if not task_ids:
+        return
+    if _clsf_batch is not None:
+        _clsf_batch["queue"].extend(task_ids)
+        _clsf_batch["total"] += len(task_ids)
+        return
+    _clsf_batch = {"queue": list(task_ids), "total": len(task_ids), "done": 0}
+    _show_next_classification(thread_id)
+
+
 def start_classification(task_id: int, thread_id: int | None) -> None:
+    start_classification_batch([task_id], thread_id)
+
+
+def _show_next_classification(thread_id: int | None) -> None:
+    global _clsf_batch
+    if _clsf_batch is None or not _clsf_batch["queue"]:
+        _clsf_batch = None
+        return
+    task_id = _clsf_batch["queue"].pop(0)
     row = db.get_task(task_id)
+    if row is None:
+        _show_next_classification(thread_id)
+        return
     try:
         guess = ai.classify_task(row["title"], row["description"])
         db.update_task(task_id, **guess)
@@ -54,20 +94,31 @@ def start_classification(task_id: int, thread_id: int | None) -> None:
     tg.send_message(_classification_text(task_id), thread_id, reply_markup=_classification_keyboard(task_id))
 
 
-def handle_classification_callback(cq: dict, task_id: int, dim_abbr: str, delta: str) -> None:
+def handle_classification_callback(cq: dict, task_id: int, dim_abbr: str, value: str) -> None:
+    global _clsf_batch
     message_id = cq["message"]["message_id"]
     thread_id = cq["message"].get("message_thread_id")
 
     if dim_abbr == "go":
         db.update_task(task_id, classification_complete=1)
-        tg.edit_message(message_id, f"Classified #{task_id} ✓")
+        tg.edit_message(message_id, f"✅ Classified #{task_id}")
         tg.answer_callback_query(cq["id"])
+        if _clsf_batch is not None:
+            _clsf_batch["done"] += 1
         _advance_after_classification(task_id, thread_id)
+        _show_next_classification(thread_id)
+        return
+
+    if dim_abbr == "later":
+        remaining = 1 + (len(_clsf_batch["queue"]) if _clsf_batch else 0)
+        _clsf_batch = None
+        tg.edit_message(message_id,
+                         f"Saved for later — {remaining} task(s) unclassified. /unclassified to resume.")
+        tg.answer_callback_query(cq["id"])
         return
 
     dim = ABBR_DIM[dim_abbr]
-    row = db.get_task(task_id)
-    new_val = max(0, min(5, (row[dim] or 0) + int(delta)))
+    new_val = max(0, min(5, int(value)))
     db.update_task(task_id, **{dim: new_val})
     tg.edit_message(message_id, _classification_text(task_id), reply_markup=_classification_keyboard(task_id))
     tg.answer_callback_query(cq["id"])
