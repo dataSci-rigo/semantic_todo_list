@@ -82,6 +82,28 @@ def edit_message(message_id: int, text: str, reply_markup: dict | None = None,
         print(f"  edit error: {e}")
 
 
+def send_document(content: bytes | str, filename: str, caption: str | None = None,
+                   thread_id: int | None = None) -> int | None:
+    """Send a generated file (e.g. an export prompt) as a document."""
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    data: dict = {"chat_id": config.CHAT_ID}
+    if caption:
+        data["caption"] = caption
+    if thread_id:
+        data["message_thread_id"] = thread_id
+    try:
+        resp = requests.post(f"{_BASE_URL}/sendDocument", data=data,
+                              files={"document": (filename, content)}, timeout=30)
+        payload = resp.json()
+        if payload.get("ok"):
+            return payload["result"]["message_id"]
+        print(f"  sendDocument failed: {payload}")
+    except Exception as e:
+        print(f"  send_document error: {e}")
+    return None
+
+
 def set_my_commands(commands: list[tuple[str, str]]) -> None:
     """Register the '/' autocomplete menu. commands = [(name, description), ...]"""
     payload = {"commands": [{"command": c, "description": d} for c, d in commands]}

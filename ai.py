@@ -224,6 +224,23 @@ def propose_substitution(missing_ingredient: str, recipe: dict, inventory_names:
     return result.get("substitute", "")
 
 
+# ── TaskBus: conflict merge (see TASKBUS.md) ─────────────────────────────
+
+MERGE_SYSTEM = """Two apps edited the same task starting from the same version; merge their
+copies into one. Prefer keeping information over dropping it; if the two titles say the same
+thing differently, pick the clearer one. Notes should combine both sides' additions without
+duplication. Respond with strict JSON only, no prose, no markdown fences:
+{"title": "...", "notes": "..." or null}"""
+
+
+def merge_task_versions(ours: dict, theirs: dict) -> dict:
+    payload = {"ours": ours, "theirs": theirs}
+    result = _call(config.MODEL_HAIKU, MERGE_SYSTEM,
+                    [{"type": "text", "text": json.dumps(payload)}], max_tokens=512)
+    return {"title": result.get("title") or ours.get("title"),
+            "notes": result.get("notes")}
+
+
 # ── storage tracker: vision ingest + search matching ─────────────────────
 
 def _image_content(image_bytes: bytes, prompt: str, media_type: str = "image/jpeg") -> list[dict]:
@@ -319,6 +336,9 @@ Intents:
   one"). Resolve against the open-task list and set task_ids. If you cannot confidently
   resolve which task, use capture instead.
 - "list_tasks": asking to see their tasks ("show my tasks", "what's on my list").
+- "next_task": asking what single thing to do next ("what's next", "what should I do now",
+  "give me my top task") — no time budget mentioned; if they state an amount of time, prefer
+  eligible_query.
 - "correction_hint": an edit instruction about just-captured tasks sent as a NEW message
   instead of a reply ("merge 1 and 4", "delete the second one", "the third one should say X").
   Do not guess task_ids here; the bot will explain how to reply-correct."""
@@ -329,6 +349,27 @@ def route_message(text: str, open_tasks: list[dict]) -> dict:
     result = _call(config.MODEL_HAIKU, ROUTE_SYSTEM,
                     [{"type": "text", "text": json.dumps(payload)}], max_tokens=256)
     if result.get("intent") not in ("capture", "eligible_query", "shopping_list", "find_item",
-                                     "mark_done", "list_tasks", "correction_hint"):
+                                     "mark_done", "list_tasks", "next_task", "correction_hint"):
         result["intent"] = "capture"
     return result
+
+
+IMPORT_CORRECTION_SYSTEM = """You apply a natural-language correction to one project being
+reviewed before bulk import. You are given the project (name, items with 1-indexed position,
+title, completed flag) and an instruction (e.g. "drop 3 and 7, rename the project Garage,
+item 2 should say 'fix bike brakes', mark 5 done"). Respond with the FULL corrected project as
+strict JSON only, no prose, no markdown fences:
+{"name": "...", "items": [{"title": "...", "completed": true/false}]}
+Keep unmentioned items unchanged, in order."""
+
+
+def correct_import_project(project: dict, instruction: str) -> dict:
+    payload = {"project": {"name": project["name"],
+                            "items": [{"position": i + 1, **it}
+                                      for i, it in enumerate(project["items"])]},
+               "instruction": instruction}
+    result = _call(config.MODEL_HAIKU, IMPORT_CORRECTION_SYSTEM,
+                    [{"type": "text", "text": json.dumps(payload)}], max_tokens=2048)
+    if result.get("name") and isinstance(result.get("items"), list):
+        return {"name": result["name"], "items": result["items"]}
+    return project

@@ -175,6 +175,17 @@ def init() -> None:
         if "category" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT")
 
+        if "priority" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER")
+
+        link_cols = {row["name"] for row in conn.execute("PRAGMA table_info(google_task_links)")}
+        if "version" not in link_cols:
+            conn.execute("ALTER TABLE google_task_links ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+        if "foreign_json" not in link_cols:
+            conn.execute("ALTER TABLE google_task_links ADD COLUMN foreign_json TEXT")
+        if "locked_by_us" not in link_cols:
+            conn.execute("ALTER TABLE google_task_links ADD COLUMN locked_by_us INTEGER NOT NULL DEFAULT 0")
+
         aw_cols = {row["name"] for row in conn.execute("PRAGMA table_info(availability_windows)")}
         if "recurring" not in aw_cols:
             conn.execute("ALTER TABLE availability_windows ADD COLUMN recurring INTEGER NOT NULL DEFAULT 0")
@@ -235,6 +246,34 @@ def get_all_tasks(exclude_status: tuple[str, ...] = ("done", "dropped"),
         else:
             query += " ORDER BY id"
         return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+
+def get_tasks_by_priority(limit: int = 10) -> list[sqlite3.Row]:
+    """Open leaf tasks (not project parents) ordered by absolute priority;
+    unprioritized tasks fall back after, ordered by u+v+i-e score."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT t.* FROM tasks t "
+            "WHERE t.status NOT IN ('done', 'dropped') "
+            "AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id = t.id) "
+            "ORDER BY CASE WHEN t.priority IS NULL THEN 1 ELSE 0 END, t.priority, "
+            "(COALESCE(t.urgency,0)+COALESCE(t.value,0)+COALESCE(t.interest,0)-COALESCE(t.energy,0)) DESC, "
+            "t.id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_subtasks(parent_task_id: int) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY id", (parent_task_id,)
+        ).fetchall()
     finally:
         conn.close()
 
@@ -718,6 +757,39 @@ def touch_google_link(task_id: int, google_updated: str | None) -> None:
             "UPDATE google_task_links SET google_updated = ?, last_synced_at = ? WHERE task_id = ?",
             (google_updated, _now(), task_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_link_bus_state(task_id: int, version: int, foreign_json: str | None = None,
+                           google_list_id: str | None = None,
+                           google_task_id: str | None = None) -> None:
+    conn = _connect()
+    try:
+        sets = ["version = ?", "last_synced_at = ?"]
+        params: list = [version, _now()]
+        if foreign_json is not None:
+            sets.append("foreign_json = ?")
+            params.append(foreign_json)
+        if google_list_id is not None:
+            sets.append("google_list_id = ?")
+            params.append(google_list_id)
+        if google_task_id is not None:
+            sets.append("google_task_id = ?")
+            params.append(google_task_id)
+        params.append(task_id)
+        conn.execute(f"UPDATE google_task_links SET {', '.join(sets)} WHERE task_id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_link_locked(task_id: int, locked: bool) -> None:
+    conn = _connect()
+    try:
+        conn.execute("UPDATE google_task_links SET locked_by_us = ? WHERE task_id = ?",
+                      (int(locked), task_id))
         conn.commit()
     finally:
         conn.close()

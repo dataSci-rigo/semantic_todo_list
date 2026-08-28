@@ -41,14 +41,30 @@ def ensure_list(name: str) -> str:
     return created["id"]
 
 
-def insert_task(list_id: str, title: str, notes: str | None = None, completed: bool = False) -> dict:
+def insert_task(list_id: str, title: str, notes: str | None = None, completed: bool = False,
+                 parent: str | None = None) -> dict:
     service = get_service()
     body: dict = {"title": title}
     if notes:
         body["notes"] = notes
     if completed:
         body["status"] = "completed"
-    return service.tasks().insert(tasklist=list_id, body=body).execute()
+    kwargs = {"tasklist": list_id, "body": body}
+    if parent:
+        kwargs["parent"] = parent
+    return service.tasks().insert(**kwargs).execute()
+
+
+def get_account_email() -> str | None:
+    """Email of the authorized account — needs the userinfo.email scope
+    (tokens minted before that scope was added return None)."""
+    try:
+        from googleapiclient.discovery import build as _build
+        creds = _load_credentials()
+        info = _build("oauth2", "v2", credentials=creds).userinfo().get().execute()
+        return info.get("email")
+    except Exception:
+        return None
 
 
 def update_task(list_id: str, task_id: str, title: str | None = None, notes: str | None = None,
@@ -62,6 +78,11 @@ def update_task(list_id: str, task_id: str, title: str | None = None, notes: str
     if completed is not None:
         body["status"] = "completed" if completed else "needsAction"
     return service.tasks().patch(tasklist=list_id, task=task_id, body=body).execute()
+
+
+def delete_task(list_id: str, task_id: str) -> None:
+    service = get_service()
+    service.tasks().delete(tasklist=list_id, task=task_id).execute()
 
 
 def list_tasks(list_id: str) -> list[dict]:

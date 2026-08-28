@@ -22,6 +22,8 @@ import config
 import context
 import db
 import flows
+import import_flows
+import ingest
 import storage_flows
 import telegram_api as tg
 
@@ -169,6 +171,14 @@ def handle_callback_query(cq: dict) -> None:
         if pending:
             flows.start_classification_batch(pending, thread_id)
         return
+    if prefix == "imp":
+        import_flows.handle_callback(cq, parts)
+        return
+    if prefix == "next":
+        thread_id = cq["message"].get("message_thread_id")
+        tg.answer_callback_query(cq["id"])
+        _show_next(int(parts[1]), thread_id, edit_message_id=cq["message"]["message_id"])
+        return
     if prefix != "sit":
         return
 
@@ -258,43 +268,60 @@ DIMENSIONS = ("urgency", "interest", "energy", "value")
 
 def _task_line(r) -> str:
     cat = f" <i>[{esc(r['category'])}]</i>" if r["category"] else ""
-    if r["classification_complete"]:
+    if r["classification_complete"] and r["urgency"] is not None:
         meta = f" <i>u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}</i>"
+    elif r["classification_complete"]:
+        meta = ""
     else:
         meta = " <i>(unclassified)</i>"
     return f"<code>#{r['id']}</code> <b>{esc(r['title'])}</b>{cat}{meta}"
 
 
-def _task_buttons(rows) -> dict | None:
+def _task_buttons(rows, cap: int = 30) -> dict | None:
     if not rows:
         return None
     btns = [{"text": f"#{r['id']} {r['title'][:28]}", "callback_data": f"task:{r['id']}"}
-            for r in rows]
+            for r in rows[:cap]]
     per_row = 2 if len(btns) > 8 else 1
     return {"inline_keyboard": [btns[i:i + per_row] for i in range(0, len(btns), per_row)]}
 
 
-def _send_task_list(rows, header: str, thread_id: int | None) -> None:
+def _send_task_list(rows, header: str, thread_id: int | None, cap: int = 30) -> None:
     """Flat (rank-preserving) list with tap-to-open buttons."""
     if not rows:
         tg.send_message(f"{header} (none)", thread_id)
         return
-    lines = [f"<b>{esc(header)}</b>"] + [_task_line(r) for r in rows]
+    lines = [f"<b>{esc(header)}</b>"] + [_task_line(r) for r in rows[:cap]]
+    if len(rows) > cap:
+        lines.append(f"<i>…and {len(rows) - cap} more</i>")
     tg.send_message("\n".join(lines), thread_id, reply_markup=_task_buttons(rows), parse_mode="HTML")
 
 
 def _build_task_hub() -> tuple[str, dict | None]:
-    """Grouped-by-category task overview with tap-to-open buttons."""
-    rows = db.get_all_tasks()
+    """Grouped-by-category overview of TOP-LEVEL tasks (projects show a
+    subtask count; their subtasks live on the project's card). Capped so a
+    300-task import can't blow Telegram's message/button limits."""
+    rows = [r for r in db.get_all_tasks() if not r["parent_task_id"]]
     if not rows:
         return "No open tasks. Send me anything to capture one.", None
     groups: dict[str, list] = {}
     for r in rows:
         groups.setdefault(r["category"] or "Uncategorized", []).append(r)
     lines = ["<b>Your tasks</b>"]
+    shown = 0
     for cat in sorted(groups, key=lambda c: (c == "Uncategorized", c.lower())):
         lines.append(f"\n<u>{esc(cat)}</u>")
-        lines.extend(_task_line(r) for r in groups[cat])
+        for r in groups[cat]:
+            subs = db.get_subtasks(r["id"])
+            open_subs = [s for s in subs if s["status"] not in ("done", "dropped")]
+            suffix = f" — {len(open_subs)}/{len(subs)} open subtasks" if subs else ""
+            lines.append(_task_line(r) + esc(suffix))
+            shown += 1
+        if sum(len(l) for l in lines) > 3500:
+            remaining = len(rows) - shown
+            if remaining > 0:
+                lines.append(f"\n<i>…and {remaining} more — /tasks &lt;category&gt; to filter.</i>")
+            break
     lines.append("\n<i>Tap a task to manage it.</i>")
     return "\n".join(lines), _task_buttons(rows)
 
@@ -315,7 +342,7 @@ def _build_task_card(task_id: int, confirm_delete: bool = False) -> tuple[str, d
     meta = []
     if r["category"]:
         meta.append(f"category: {esc(r['category'])}")
-    if r["classification_complete"]:
+    if r["classification_complete"] and r["urgency"] is not None:
         meta.append(f"u{r['urgency']}/i{r['interest']}/e{r['energy']}/v{r['value']}")
     if r["skill_level_required"] is not None:
         meta.append(f"skill {r['skill_level_required']}")
@@ -330,6 +357,15 @@ def _build_task_card(task_id: int, confirm_delete: bool = False) -> tuple[str, d
     if reqs:
         owned = sum(1 for q in reqs if q["satisfied"])
         lines.append(f"<i>supplies: {owned}/{len(reqs)} ready</i>")
+    subs = db.get_subtasks(task_id)
+    if subs:
+        lines.append("")
+        for s in subs[:12]:
+            box = "☑" if s["status"] == "done" else "☐"
+            lines.append(f"{box} <code>#{s['id']}</code> {esc(s['title'])}")
+        if len(subs) > 12:
+            lines.append(f"<i>…and {len(subs) - 12} more</i>")
+        lines.append("<i>mark subtasks: \"12 is done\" or /done 12</i>")
 
     delete_btn = ({"text": "🗑 Really delete?", "callback_data": f"task:{task_id}:del2"}
                   if confirm_delete else
@@ -355,6 +391,58 @@ def _mark_done_with_undo(task_id: int, thread_id: int | None) -> None:
     kb = {"inline_keyboard": [[{"text": "↩️ Undo", "callback_data": f"undo:done:{task_id}:{prior}"}]]}
     tg.send_message(f"✅ #{task_id} {task['title']} — done", thread_id, reply_markup=kb)
     _notify_unblocked(task_id, thread_id)
+
+
+def _show_next(offset: int, thread_id: int | None, edit_message_id: int | None = None) -> None:
+    rows = db.get_tasks_by_priority(limit=offset + 1)
+    if not rows:
+        tg.send_message("No open tasks — nice.", thread_id)
+        return
+    if offset >= len(rows):
+        offset = 0  # wrap around
+    r = rows[offset]
+    card = _build_task_card(r["id"])
+    if card is None:
+        return
+    pr = f"priority {r['priority']}" if r["priority"] else "unprioritized — score-ranked; /export to prioritize"
+    text = f"🎯 <b>Next up</b> <i>({esc(pr)})</i>\n\n" + card[0]
+    kb = card[1]
+    kb["inline_keyboard"].append([{"text": "⏭ Skip", "callback_data": f"next:{offset + 1}"}])
+    if edit_message_id:
+        tg.edit_message(edit_message_id, text, reply_markup=kb, parse_mode="HTML")
+    else:
+        tg.send_message(text, thread_id, reply_markup=kb, parse_mode="HTML")
+
+
+def _handle_document(msg: dict, thread_id: int | None) -> None:
+    import json as _json
+    doc = msg["document"]
+    if (doc.get("file_size") or 0) > 5 * 1024 * 1024:
+        tg.send_message("That file is too big (5MB max).", thread_id)
+        return
+    data = tg.download_file(doc["file_id"])
+    if data is None:
+        tg.send_message("Couldn't download that file.", thread_id)
+        return
+    text = data.decode("utf-8", errors="replace")
+
+    if import_flows.wants_text():
+        import_flows.handle_text(text, thread_id)
+        return
+    try:
+        payload = _json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and import_flows.handle_scrape_json(payload, thread_id):
+        return
+    if import_flows.looks_like_grouped_output(text):
+        import_flows.start_review_from_text(text, thread_id)
+        return
+    tg.send_message(
+        "Couldn't recognize that file — I take script_data scrape JSONs, Fable's "
+        "PROJECT:/checkbox groupings, or prioritized #id lists (after /priorities).",
+        thread_id,
+    )
 
 
 def _handle_task_callback(cq: dict, parts: list[str]) -> None:
@@ -452,6 +540,15 @@ def _handle_undo_callback(cq: dict, parts: list[str]) -> None:
         prior = parts[3] if len(parts) > 3 else "draft"
         db.update_task(task_id, status=prior)
         tg.edit_message(message_id, f"↩️ #{task_id} is open again.")
+        tg.answer_callback_query(cq["id"])
+
+    elif parts[1] == "merge":
+        task_id = int(parts[2])
+        if sync is not None and sync.revert_merge(task_id):
+            tg.edit_message(message_id, f"↩️ #{task_id} restored to your pre-merge version "
+                                         "(pushes on next sync).")
+        else:
+            tg.edit_message(message_id, "Nothing to revert — that merge is no longer held.")
         tg.answer_callback_query(cq["id"])
 
 
@@ -597,6 +694,9 @@ def _send_shopping_list(list_name: str, thread_id: int | None) -> None:
 def _route_text(text: str, message_id: int, thread_id: int | None) -> None:
     """Intent-route a free-text message; capture is the safe fallback so
     nothing is ever lost."""
+    if import_flows.looks_like_grouped_output(text):
+        import_flows.start_review_from_text(text, thread_id)
+        return
     open_tasks = [{"id": r["id"], "title": r["title"]} for r in db.get_all_tasks()]
     try:
         route = ai.route_message(text, open_tasks)
@@ -605,6 +705,9 @@ def _route_text(text: str, message_id: int, thread_id: int | None) -> None:
         route = {"intent": "capture"}
     intent = route.get("intent")
 
+    if intent == "next_task":
+        _show_next(0, thread_id)
+        return
     if intent == "eligible_query":
         minutes = route.get("minutes")
         if not minutes:
@@ -747,6 +850,10 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "• reply to any \"Saved:\" message to correct it in plain English\n\n"
             "Putting stuff away: /box → photo of the contents → I catalog it, "
             "number the box, and remember where it lives. /loose for un-boxed items.\n\n"
+            "Priorities via claude.ai: /export → paste the file into claude.ai → "
+            "/priorities → paste its reply back. Then /next always knows your top task. "
+            "Bulk import old tasks/Keep data: upload the scrape JSON, paste the prompt I "
+            "return into claude.ai, then /import with its reply.\n\n"
             "The / menu lists every command (tap the / button). The precision "
             "versions still work: /tasks (sort: /tasks urgency · filter: /tasks kid stuff), "
             "/now, /window, /recurring, /find, /stuff, /store /online /groceries, "
@@ -760,7 +867,9 @@ def handle_command(text: str, thread_id: int | None) -> None:
         if not rows:
             tg.send_message("Nothing unclassified 🎉", thread_id)
             return
-        lines = ["<b>Unclassified tasks:</b>"] + [_task_line(r) for r in rows]
+        lines = ["<b>Unclassified tasks:</b>"] + [_task_line(r) for r in rows[:30]]
+        if len(rows) > 30:
+            lines.append(f"<i>…and {len(rows) - 30} more</i>")
         kb = {"inline_keyboard": [[{"text": "▶️ Classify now", "callback_data": "clsfstart"}]]}
         tg.send_message("\n".join(lines), thread_id, reply_markup=kb, parse_mode="HTML")
     elif cmd == "category":
@@ -806,8 +915,36 @@ def handle_command(text: str, thread_id: int | None) -> None:
     elif cmd == "stuff":
         _handle_stuff_command(args, thread_id)
     elif cmd == "cancel":
-        msg = storage_flows.cancel()
+        msg = storage_flows.cancel() or import_flows.cancel()
         tg.send_message(msg or "Nothing to cancel.", thread_id)
+    elif cmd == "next":
+        _show_next(0, thread_id)
+    elif cmd == "export":
+        prompt = ingest.build_priority_prompt()
+        tg.send_document(prompt, "prioritize_tasks.txt", thread_id=thread_id,
+                          caption="Paste this into claude.ai (Fable), then send /priorities "
+                                  "here and paste its reply.")
+    elif cmd == "import":
+        import_flows.start_import(thread_id)
+    elif cmd == "priorities":
+        import_flows.start_priorities(thread_id)
+    elif cmd in ("lock", "unlock"):
+        if sync is None or not args or not args[0].isdigit():
+            tg.send_message(f"Usage: /{cmd} <task_id> — forbid/allow other TaskBus apps "
+                             "changing this task", thread_id)
+            return
+        if sync.set_lock(int(args[0]), cmd == "lock"):
+            icon = "🔒" if cmd == "lock" else "🔓"
+            tg.send_message(f"{icon} #{args[0]} {cmd}ed (applies on next sync).", thread_id)
+        else:
+            tg.send_message(f"#{args[0]} isn't synced to TaskBus yet — it locks on first sync.",
+                             thread_id)
+    elif cmd == "priority":
+        if len(args) == 2 and args[0].isdigit() and args[1].isdigit():
+            db.update_task(int(args[0]), priority=int(args[1]))
+            tg.send_message(f"#{args[0]} priority set to {args[1]}.", thread_id)
+        else:
+            tg.send_message("Usage: /priority <task_id> <rank> (1 = highest)", thread_id)
     elif cmd == "sync":
         if sync is None:
             tg.send_message("Google Tasks sync isn't installed — see oauth_setup.py / requirements.txt.",
@@ -881,8 +1018,19 @@ def process_update(update: dict) -> None:
         handle_command(text, thread_id)
         return
 
+    if msg.get("document"):
+        _handle_document(msg, thread_id)
+        return
+
+    if import_flows.wants_text() and text:
+        import_flows.handle_text(text, thread_id)
+        return
+
     if reply_to:
         reply_id = reply_to["message_id"]
+        if import_flows.wants_reply(reply_id):
+            import_flows.handle_reply(text, thread_id)
+            return
         if storage_flows.wants_reply(reply_id):
             storage_flows.handle_reply(text, thread_id)
             return
@@ -916,8 +1064,12 @@ def main() -> None:
 
     db.init()
     tg.set_my_commands([
+        ("next", "Your single top-priority task"),
         ("tasks", "Your tasks — tap one to manage it"),
         ("now", "What can I do right now? e.g. /now 30"),
+        ("export", "Export tasks as a claude.ai prioritization prompt"),
+        ("priorities", "Paste back claude.ai's prioritized list"),
+        ("import", "Paste back claude.ai's grouped projects"),
         ("find", "Where is my …? e.g. /find snowgear"),
         ("stuff", "Browse boxes and storage locations"),
         ("box", "Put a box away: photo → cataloged"),

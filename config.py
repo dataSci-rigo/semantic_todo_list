@@ -21,9 +21,17 @@ GOOGLE_CLIENT_SECRET_PATH = os.getenv(
         "client_secret_994331043279-p0c58fgvb760e5b37p90qgp35asn4e5j.apps.googleusercontent.com.json"),
 )
 GOOGLE_TOKEN_PATH = Path(__file__).parent / "data" / "google_token.json"
-GOOGLE_TASKS_LIST_NAME = "Semantic Task Manager"
-GOOGLE_TASKS_SCOPES = ["https://www.googleapis.com/auth/tasks"]
+GOOGLE_TASKS_LIST_NAME = os.getenv("TASKBUS_LIST_NAME", "TaskBus")
+GOOGLE_TASKS_SCOPES = [
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
 SYNC_INTERVAL_SECONDS = 10 * 60
+
+# TaskBus protocol (see TASKBUS.md)
+TASKBUS_APP_ID = "stm"
+SYNC_ACCOUNT = os.getenv("STM_SYNC_ACCOUNT", "rlunaorozco@berkeley.edu")
 
 TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
 WINDOW_CHECK_INTERVAL_SECONDS = 60
