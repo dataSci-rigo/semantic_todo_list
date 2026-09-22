@@ -1,0 +1,15 @@
+# Visualization challenges (user's note 7). Roles come from the core field `roles`.
+horizons:
+  - {id: w1, label: "next week"}
+  - {id: m3, label: "in 3 months"}
+  - {id: y1, label: "in a year"}
+  - {id: y5, label: "in 5 years"}
+templates:
+  - "How do you see yourself as a {role_a} and {role_b} {horizon}? One concrete scene."
+  - "{horizon_cap}, as a {role_a}: what is one thing you are doing that you are not doing now?"
+  - "Picture a specific afternoon {horizon}, as a {role_a}. Who is there, what is in your hands?"
+avoid_repeat_days: 14
+playback:                       # Stage 2
+  where: [aim.vis]
+  match: {task_category: 3, project: 3, role: 2, domain: 1}
+  min_score: 2

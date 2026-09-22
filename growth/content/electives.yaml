@@ -1,0 +1,148 @@
+# Elective modules attach to touch slots. slot = <touch id>.<slot id>.
+# frequency: daily | weekly:<mon..sun> | every_n_days:<N> | once
+modules:
+  - id: wont
+    title: I won't
+    track: C
+    min_level: 1
+    slot: morning.wont
+    frequency: daily
+    always: true
+    feedback_eligible: false
+    when: {path: ctx.has_feels_like, eq: true}
+    steps:
+      - {id: pick, field: wont, type: pick, prompt: "Today's abstention?", options_from: rest_menu.feels_like,
+         effect: day_field, emit: wont_set}
+
+  - id: franklin_morning
+    title: Franklin, morning
+    track: A
+    min_level: 1
+    slot: morning.franklin
+    frequency: daily
+    feedback_eligible: true
+    cites: "Franklin, Autobiography part 2"
+    steps:
+      - {id: q, field: franklin_am, type: text, prompt: "{ctx.franklin_virtue_line}What good will you do today?",
+         effect: entry, emit: franklin_morning_logged}
+
+  - id: franklin_evening
+    title: Franklin, evening
+    track: A
+    min_level: 1
+    slot: evening.franklin_evening
+    frequency: daily
+    feedback_eligible: true
+    steps:
+      - {id: q, field: franklin_pm, type: text, prompt: "What good have you done today?",
+         effect: entry, emit: franklin_evening_logged}
+
+  - id: core_field
+    title: Core data
+    track: A
+    min_level: 1
+    slot: morning.core_field
+    frequency: daily
+    feedback_eligible: false
+    when: {path: ctx.next_core_field, truthy: true}
+    steps:
+      - {id: q, field: core_next, type: text, prompt: "{ctx.next_core_prompt}", effect: core_field_next,
+         emit: core_field_set}
+
+  - id: obs_intro
+    title: Under the microscope
+    track: A
+    min_level: 1
+    slot: morning.intro_weekly
+    frequency: weekly:mon
+    feedback_eligible: false
+    steps:
+      - {id: intro, type: note, text_from: observation_intro}
+
+  - id: why_reread
+    title: Why
+    track: A
+    min_level: 1
+    slot: morning.intro_weekly
+    frequency: weekly:mon
+    feedback_eligible: false
+    when: {path: ctx.core_why, truthy: true}
+    steps:
+      - {id: why, type: note, text_from: why_text}
+
+  - id: observation
+    title: Observation
+    track: A
+    min_level: 1
+    slot: evening.observation
+    frequency: daily
+    always: true
+    feedback_eligible: true
+    steps:
+      - {id: prompt, field: observation, type: text, prompt: "{ctx.observation_prompt}", grade: true,
+         effect: entry, emit: observation_logged}
+
+  - id: three_good
+    title: Three Good Things
+    track: A
+    min_level: 1
+    slot: evening.three_good
+    frequency: every_n_days:2
+    feedback_eligible: true
+    cites: "Achor, principle 2"
+    steps:
+      - {id: g1, field: good_1, type: text, prompt: "Good thing 1.", effect: entry}
+      - {id: g2, field: good_2, type: text, prompt: "Good thing 2.", when: {path: answers.three_good.good_1, truthy: true}, effect: entry}
+      - {id: g3, field: good_3, type: text, prompt: "Good thing 3.", when: {path: answers.three_good.good_2, truthy: true}, effect: entry, emit: three_good_logged}
+
+  - id: spark
+    title: Spark
+    track: C
+    min_level: 1
+    slot: refocus.spark
+    frequency: every_n_days:2
+    feedback_eligible: false
+    when: {path: ctx.has_wins, eq: true}
+    steps:
+      - {id: line, type: note, text_from: spark_line}
+
+  - id: visualize
+    title: Visualization
+    track: A
+    min_level: 1
+    slot: morning.visualize
+    frequency: daily
+    feedback_eligible: false
+    when: {path: ctx.has_roles, eq: true}
+    steps:
+      - {id: offer, field: vis_offer, type: note, text_from: visualization_prompt,
+         buttons: [{value: write, label: "Write it", next: visualize.text}, {value: later, label: "Ask again later", end_step: true}, {value: skip, label: "Not today", end_step: true}],
+         effect: visualization_offer}
+      - {id: text, field: vis_text, type: text, prompt: "One concrete scene.", skip: false,
+         when: {path: answers.visualize.vis_offer, eq: write}, effect: visualization_save, emit: visualization_logged}
+
+  # ── Stage 2 modules (level 2–3): declared so the loader knows the slots, gated by min_level ──
+  - id: premortem
+    title: Premortem
+    track: C
+    min_level: 3
+    slot: aim.premortem
+    frequency: daily
+    feedback_eligible: true
+    cites: "Kahneman ch. 24"
+    steps:
+      - {id: q, field: premortem, type: text, prompt: "It is evening and this did not move. Most likely reason?",
+         effect: challenge_field, emit: premortem_logged}
+
+  - id: error_log
+    title: Error log
+    track: A
+    min_level: 2
+    slot: end.error_log
+    frequency: daily
+    feedback_eligible: true
+    cites: "Kahneman ch. 9, 23, 7"
+    steps:
+      - {id: q, field: error_log, type: pick, prompt: "Which error showed up in this block?",
+         options: [{value: substitution, label: "Answered an easier question"}, {value: planning, label: "Planning fallacy"}, {value: wysiati, label: "WYSIATI"}, {value: none, label: "None"}],
+         effect: challenge_field, emit: error_logged}

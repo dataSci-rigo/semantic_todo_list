@@ -10,6 +10,18 @@ import config
 _BASE_URL = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}"
 _FILE_URL = f"https://api.telegram.org/file/bot{config.TELEGRAM_TOKEN}"
 
+# (chat_id, thread_id) -> message_id of the last message this process sent there.
+# growth uses it to decide whether a plain text is the answer to its open question.
+_last_sent: dict[tuple[int, int | None], int] = {}
+
+
+def last_sent_message_id(chat_id: int, thread_id: int | None) -> int | None:
+    return _last_sent.get((chat_id, thread_id))
+
+
+def _remember(chat_id: int, thread_id: int | None, message_id: int) -> None:
+    _last_sent[(chat_id, thread_id)] = message_id
+
 
 def get_updates(offset: int, timeout: int = 30) -> list[dict]:
     try:
@@ -26,18 +38,23 @@ def get_updates(offset: int, timeout: int = 30) -> list[dict]:
 
 
 def send_message(text: str, thread_id: int | None = None,
-                  reply_markup: dict | None = None, parse_mode: str | None = None) -> int | None:
-    payload: dict = {"chat_id": config.CHAT_ID, "text": text}
+                  reply_markup: dict | None = None, parse_mode: str | None = None,
+                  chat_id: int | None = None, reply_to_message_id: int | None = None) -> int | None:
+    cid = chat_id or config.CHAT_ID
+    payload: dict = {"chat_id": cid, "text": text}
     if thread_id:
         payload["message_thread_id"] = thread_id
     if reply_markup:
         payload["reply_markup"] = reply_markup
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_to_message_id:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
     try:
         resp = requests.post(f"{_BASE_URL}/sendMessage", json=payload, timeout=10)
         data = resp.json()
         if data.get("ok"):
+            _remember(cid, thread_id, data["result"]["message_id"])
             return data["result"]["message_id"]
         print(f"  sendMessage failed: {data}")
     except Exception as e:
@@ -46,9 +63,10 @@ def send_message(text: str, thread_id: int | None = None,
 
 
 def send_photo(file_id: str, caption: str | None = None, thread_id: int | None = None,
-                reply_markup: dict | None = None) -> int | None:
+                reply_markup: dict | None = None, chat_id: int | None = None) -> int | None:
     """Re-send a photo Telegram already hosts, by its file_id."""
-    payload: dict = {"chat_id": config.CHAT_ID, "photo": file_id}
+    cid = chat_id or config.CHAT_ID
+    payload: dict = {"chat_id": cid, "photo": file_id}
     if caption:
         payload["caption"] = caption
     if thread_id:
@@ -59,6 +77,7 @@ def send_photo(file_id: str, caption: str | None = None, thread_id: int | None =
         resp = requests.post(f"{_BASE_URL}/sendPhoto", json=payload, timeout=15)
         data = resp.json()
         if data.get("ok"):
+            _remember(cid, thread_id, data["result"]["message_id"])
             return data["result"]["message_id"]
         print(f"  sendPhoto failed: {data}")
     except Exception as e:
@@ -67,8 +86,9 @@ def send_photo(file_id: str, caption: str | None = None, thread_id: int | None =
 
 
 def edit_message(message_id: int, text: str, reply_markup: dict | None = None,
-                  parse_mode: str | None = None) -> None:
-    payload: dict = {"chat_id": config.CHAT_ID, "message_id": message_id, "text": text}
+                  parse_mode: str | None = None, chat_id: int | None = None) -> bool:
+    """Edit in place. Returns True when Telegram accepted it (or nothing changed)."""
+    payload: dict = {"chat_id": chat_id or config.CHAT_ID, "message_id": message_id, "text": text}
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
     if parse_mode:
@@ -76,18 +96,21 @@ def edit_message(message_id: int, text: str, reply_markup: dict | None = None,
     try:
         resp = requests.post(f"{_BASE_URL}/editMessageText", json=payload, timeout=10)
         data = resp.json()
-        if not data.get("ok") and "message is not modified" not in data.get("description", ""):
-            print(f"  editMessageText failed: {data}")
+        if data.get("ok") or "message is not modified" in data.get("description", ""):
+            return True
+        print(f"  editMessageText failed: {data}")
     except Exception as e:
         print(f"  edit error: {e}")
+    return False
 
 
 def send_document(content: bytes | str, filename: str, caption: str | None = None,
-                   thread_id: int | None = None) -> int | None:
+                   thread_id: int | None = None, chat_id: int | None = None) -> int | None:
     """Send a generated file (e.g. an export prompt) as a document."""
     if isinstance(content, str):
         content = content.encode("utf-8")
-    data: dict = {"chat_id": config.CHAT_ID}
+    cid = chat_id or config.CHAT_ID
+    data: dict = {"chat_id": cid}
     if caption:
         data["caption"] = caption
     if thread_id:
@@ -97,6 +120,7 @@ def send_document(content: bytes | str, filename: str, caption: str | None = Non
                               files={"document": (filename, content)}, timeout=30)
         payload = resp.json()
         if payload.get("ok"):
+            _remember(cid, thread_id, payload["result"]["message_id"])
             return payload["result"]["message_id"]
         print(f"  sendDocument failed: {payload}")
     except Exception as e:

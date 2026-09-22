@@ -1,0 +1,66 @@
+# A scripted day through the real stm_bot routing. Run:
+#   python -m growth.simulate --fresh --now 2026-09-18T07:00 --script growth/tests/day.sim
+/start
+tap Next
+text to be useful to my family
+text They say he showed up.
+text writer
+text woodworking
+tap 1
+tap 3
+tap Done
+text gate hinge
+text coffee, 20
+text geopolitics videos
+tap 1
+tap 4
+tap Done
+text father, husband, engineer
+/why
+/win_old 2019: cold-called the county office after avoiding it for a week
+/morning
+tap 2 h
+tap OK
+text Gate hinge; Tax letter; Optometrist
+tap P1
+tap P2
+tap geopolitics
+tap coffee
+tap Done
+text 2 pm after lunch, news
+/status
+/aim
+tap P1
+text hinge off, new one on
+tap Skip
+tap 45
+/now
+tap Other
+tap P5
+tap Surf
+sleep 91
+sleep 301
+/end
+tap 4
+text stuck on the top screw; next: drill it out
+tap 60
+tap Next small step
+text buy a bit
+/rest
+tap coffee
+sleep 1201
+tap Back
+/evening
+tap Done
+tap Rolled
+tap Yes
+tap Yes
+text did the hinge instead of the video
+tap Next
+text have the bit on the bench
+tap Skip
+tap Skip
+/status
+/excuses
+/misalloc
+/mydata

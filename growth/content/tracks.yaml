@@ -1,0 +1,75 @@
+# Tracks, levels and metrics. Metric kinds: count | days | ratio | measure.
+# window_days counts active (non-survival) days only. Levels never regress.
+targets:
+  pre_baby: {C: 2, B: 2}
+
+tracks:
+  - id: A
+    name: Frame
+    levels:
+      - level: 1
+        name: Notice
+        metrics: []
+      - level: 2
+        name: Dispute
+        metrics:
+          - {id: core_complete, kind: count, event: core_field_set, distinct: field, min: 10}
+          - {id: evenings_10_of_14, kind: days, event: evening_logged, min: 10, window_days: 14}
+      - level: 3
+        name: Redesign
+        metrics:
+          - {id: disputes_8, kind: count, event: dispute_logged, min: 8, window_days: 28}
+          - {id: badly_6, kind: count, event: badly_session, min: 6, window_days: 28}
+    informational:
+      - {id: explanatory_trend, kind: measure, measure: explanatory_trend, last_n: 20}
+  - id: B
+    name: Approach
+    levels:
+      - level: 1
+        name: Name it, start tiny
+        metrics: []
+      - level: 2
+        name: Worst first
+        metrics:
+          - {id: excuse_logs_7, kind: count, event: excuse_logged, where: {family: 1}, min: 7, window_days: 28}
+          - {id: starts_5, kind: count, event: start5_completed, min: 5, window_days: 28}
+          - {id: predictions_5, kind: count, event: failure_point_set, min: 5, window_days: 28}
+      - level: 3
+        name: Deliberate practice
+        metrics:
+          - {id: challenges_10, kind: count, event: challenge_ended, min: 10, window_days: 28}
+          - {id: estimate_error, kind: measure, measure: estimate_error, last_n: 5, max_mean: 0.5}
+          - {id: avoided_cleared_3, kind: count, event: avoided_cleared, min: 3}
+  - id: C
+    name: Aim
+    levels:
+      - level: 1
+        name: Know the number
+        metrics: []
+      - level: 2
+        name: Choose the number
+        metrics:
+          - {id: refocus_10_of_14, kind: days, event: refocus_answered, per_day_min: 3, min: 10, window_days: 14}
+          - {id: misalloc_baseline, kind: measure, measure: misalloc_minutes_per_day, window_days: 14, min_days_measured: 14}
+        on_reach_snapshot: {misalloc_baseline: {measure: misalloc_minutes_per_day, window_days: 14}}
+      - level: 3
+        name: Aim the depth
+        metrics:
+          - {id: misalloc_down_50, kind: measure, measure: misalloc_minutes_per_day, window_days: 14, max_ratio_to_snapshot: misalloc_baseline, factor: 0.5}
+          - {id: rest_restored_70, kind: ratio, event: rest_checked, numerator_where: {rest_restored: yes}, min_ratio: 0.7, min_n: 5, window_days: 14}
+      - level: 4
+        name: Aimed
+        metrics:
+          - {id: moved_6, kind: count, event: challenge_ended, where: {moved_gte: 4}, min: 6, window_days: 28}
+          - {id: resume_80, kind: ratio, event: challenge_ended, numerator_where: {resume_note: present}, min_ratio: 0.8, min_n: 5, window_days: 28}
+          - {id: misalloc_holds, kind: measure, measure: misalloc_minutes_per_day, window_days: 14, max_ratio_to_snapshot: misalloc_baseline, factor: 0.5}
+
+# Note: in this file a track's "level N" block holds the metrics required to
+# REACH level N. Level 1 is where everyone starts.
+
+streaks:
+  - id: daily_use
+    goal: 30
+    milestones: [7, 14, 30]
+    counts_in_survival: true
+    on_goal_win: "30 days, one touch or more each day."

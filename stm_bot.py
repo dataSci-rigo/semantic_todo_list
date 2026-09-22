@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Semantic Task Manager — Phase 0 (capture).
+"""Semantic Task Manager bot (service app-stm) + the Growth coaching layer.
 
 Send text, a screenshot of a list, a photo of a situation, or a photo of a
-recipe/instructions to the bot's Telegram group; it saves tasks to SQLite.
-Reply to the bot's confirmation message with natural-language corrections
-("delete the second one", "merge 1 and 3") to edit them.
+recipe/instructions to the bot; it saves tasks to SQLite. Reply to the bot's
+confirmation message with natural-language corrections ("delete the second
+one", "merge 1 and 3") to edit them. The growth/ package adds the daily
+coaching arc (see growth/__init__.py and ~/Documents/gbot/).
 
 .env keys: STM_BOT_ID, STM_CHAT_ID, STM_IS_FORUM, ANTHROPIC_API_KEY
+Optional: GROWTH_CHAT_ID, GROWTH_THREAD_ID, GROWTH_ALLOWED_USER_IDS
 
-Run: python bot.py
+Run: python stm_bot.py  (one long-poller per token — never run two copies)
 """
 from __future__ import annotations
 
+import argparse
 import html
 import time
 from datetime import datetime
@@ -26,6 +29,7 @@ import import_flows
 import ingest
 import storage_flows
 import telegram_api as tg
+import growth
 
 try:
     import sync
@@ -173,6 +177,9 @@ def handle_callback_query(cq: dict) -> None:
         return
     if prefix == "imp":
         import_flows.handle_callback(cq, parts)
+        return
+    if prefix == "gb":
+        growth.handle_callback(cq, parts)
         return
     if prefix == "next":
         thread_id = cq["message"].get("message_thread_id")
@@ -832,12 +839,17 @@ def _handle_stuff_command(args: list[str], thread_id: int | None) -> None:
 
 # ── command handling ─────────────────────────────────────────────────────
 
-def handle_command(text: str, thread_id: int | None) -> None:
+def handle_command(text: str, thread_id: int | None, msg: dict | None = None) -> None:
     parts = text.split()
     cmd = parts[0].lstrip("/").split("@")[0].lower()
     args = parts[1:]
+    msg = msg or {}
 
-    if cmd in ("help", "start"):
+    if cmd == "start" and growth.needs_onboarding(msg):
+        growth.handle_command("start", args, msg, thread_id)
+    elif cmd == "help" and args and args[0].lower() == "growth":
+        tg.send_message(growth.help_block(full=True), thread_id, parse_mode="HTML")
+    elif cmd in ("help", "start"):
         tg.send_message(
             "<b>Semantic Task Manager</b>\n\n"
             "Mostly, just talk to me — no commands needed:\n"
@@ -857,7 +869,8 @@ def handle_command(text: str, thread_id: int | None) -> None:
             "The / menu lists every command (tap the / button). The precision "
             "versions still work: /tasks (sort: /tasks urgency · filter: /tasks kid stuff), "
             "/now, /window, /recurring, /find, /stuff, /store /online /groceries, "
-            "/done /delete /category /dependency <code>id</code>, /unclassified, /sync, /cancel.",
+            "/done /delete /category /dependency <code>id</code>, /unclassified, /sync, /cancel.\n\n"
+            + growth.help_block(),
             thread_id, parse_mode="HTML",
         )
     elif cmd == "tasks":
@@ -893,8 +906,11 @@ def handle_command(text: str, thread_id: int | None) -> None:
     elif cmd == "dependency":
         _handle_dependency_command(args, thread_id)
     elif cmd == "now":
-        if not args or not args[0].isdigit():
-            tg.send_message("Usage: /now <minutes> — e.g. /now 30", thread_id)
+        if not args:
+            growth.handle_command("now", [], msg, thread_id)
+            return
+        if not args[0].isdigit():
+            tg.send_message("Usage: /now <minutes> — e.g. /now 30 (bare /now = refocus)", thread_id)
             return
         rows = context.eligible_tasks(int(args[0]))
         _send_task_list(rows, f"Eligible for {args[0]} minutes:", thread_id)
@@ -915,8 +931,9 @@ def handle_command(text: str, thread_id: int | None) -> None:
     elif cmd == "stuff":
         _handle_stuff_command(args, thread_id)
     elif cmd == "cancel":
-        msg = storage_flows.cancel() or import_flows.cancel()
-        tg.send_message(msg or "Nothing to cancel.", thread_id)
+        note = storage_flows.cancel() or import_flows.cancel() \
+            or growth.cancel((msg.get("from") or {}).get("id") or config.CHAT_ID)
+        tg.send_message(note or "Nothing to cancel.", thread_id)
     elif cmd == "next":
         _show_next(0, thread_id)
     elif cmd == "export":
@@ -963,6 +980,8 @@ def handle_command(text: str, thread_id: int | None) -> None:
         list_name = {"store": db.SUPPLY_STORE_LIST, "online": db.ONLINE_LIST,
                      "groceries": db.GROCERY_LIST}[cmd]
         _send_shopping_list(list_name, thread_id)
+    elif cmd in growth.COMMANDS:
+        growth.handle_command(cmd, args, msg, thread_id)
 
 
 def _notify_unblocked(finished_task_id: int, thread_id: int | None) -> None:
@@ -1007,15 +1026,16 @@ def process_update(update: dict) -> None:
         return
 
     msg = update.get("message")
-    if not msg or msg.get("chat", {}).get("id") != config.CHAT_ID:
+    if not msg or msg.get("chat", {}).get("id") not in (config.CHAT_ID, growth.settings.CHAT_ID):
         return
 
     thread_id = msg.get("message_thread_id")
     text = msg.get("text", "").strip()
     reply_to = msg.get("reply_to_message")
+    user_id = (msg.get("from") or {}).get("id") or config.CHAT_ID
 
     if text.startswith("/"):
-        handle_command(text, thread_id)
+        handle_command(text, thread_id, msg)
         return
 
     if msg.get("document"):
@@ -1034,6 +1054,9 @@ def process_update(update: dict) -> None:
         if storage_flows.wants_reply(reply_id):
             storage_flows.handle_reply(text, thread_id)
             return
+        if text and growth.wants_reply(user_id, reply_id):
+            growth.handle_text(user_id, reply_id, text, msg)
+            return
         cap = db.find_capture_by_awaiting_other(reply_id)
         if cap is not None:
             handle_other_reply(cap, text, thread_id)
@@ -1049,7 +1072,21 @@ def process_update(update: dict) -> None:
         else:
             handle_photo_capture(msg, thread_id)
     elif text:
+        if growth.claim_text(user_id, msg["chat"]["id"], thread_id, text, msg):
+            return
         _route_text(text, msg["message_id"], thread_id)
+
+
+def _sync_now(max_age: int = 120) -> bool:
+    """Run the TaskBus sync if the last one is older than max_age seconds (growth hook)."""
+    global _last_sync
+    if sync is None or not config.GOOGLE_TOKEN_PATH.exists():
+        return False
+    if time.time() - _last_sync < max_age:
+        return True
+    sync.run_sync()
+    _last_sync = time.time()
+    return True
 
 
 def main() -> None:
@@ -1063,6 +1100,8 @@ def main() -> None:
         raise ValueError("ANTHROPIC_API_KEY not set in .env")
 
     db.init()
+    growth.init()
+    growth.hooks.sync_now = _sync_now
     tg.set_my_commands([
         ("next", "Your single top-priority task"),
         ("tasks", "Your tasks — tap one to manage it"),
@@ -1083,19 +1122,25 @@ def main() -> None:
         ("sync", "Sync with Google Tasks now"),
         ("cancel", "Abandon the current flow"),
         ("help", "What can I send you?"),
-    ])
-    print("Semantic task manager started.")
+    ] + growth.MENU_COMMANDS)
+    print("Semantic task manager started (with growth).")
 
     while True:
-        updates = tg.get_updates(_offset)
+        updates = tg.get_updates(_offset, timeout=growth.poll_timeout(30))
         for update in updates:
             try:
                 process_update(update)
             except Exception as e:
                 print(f"  error processing update: {e}")
 
+        try:
+            growth.tick()
+        except Exception as e:
+            print(f"  growth tick error: {e}")
+
         if sync is not None and config.GOOGLE_TOKEN_PATH.exists() \
-                and time.time() - _last_sync > config.SYNC_INTERVAL_SECONDS:
+                and time.time() - _last_sync > config.SYNC_INTERVAL_SECONDS \
+                and not growth.busy():
             sync.run_sync()
             _last_sync = time.time()
 
@@ -1110,5 +1155,11 @@ def main() -> None:
             time.sleep(1)
 
 
-if __name__ == "__main__":
+def _cli() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.parse_args()
     main()
+
+
+if __name__ == "__main__":
+    _cli()

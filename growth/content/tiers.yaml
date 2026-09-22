@@ -1,0 +1,31 @@
+# Willpower challenge tiers (user's note 1) and the wpi triad mapping.
+triad:
+  i_will: "today's challenge blocks (/aim … /end)"
+  i_wont: "one abstention per day, chosen each morning from the feels-like-rest list, checked at evening"
+  i_want: "core.why, re-read Mondays and on the 'it doesn't matter' excuse; one Success Bank win at every challenge start"
+
+tiers:
+  - id: t30
+    label: "30-min block"
+    level: 1
+    block_minutes: 30
+    challenges_per_day: 2
+    min_capacity: 1
+    unlock: []
+  - id: half
+    label: "half day"
+    level: 2
+    block_minutes: null
+    challenges_per_day: 1
+    min_capacity: 4
+    unlock:
+      - {id: t30_blocks_10, kind: count, event: challenge_ended, where: {tier: t30, moved_gte: 3}, min: 10, window_days: 21}
+      - {id: estimate_ok, kind: measure, measure: estimate_error, last_n: 5, max_mean: 0.5}
+  - id: full
+    label: "full day"
+    level: 3
+    block_minutes: null
+    challenges_per_day: 1
+    min_capacity: 4
+    unlock:
+      - {id: half_days_6, kind: count, event: challenge_ended, where: {tier: half, moved_gte: 3}, min: 6, window_days: 28}

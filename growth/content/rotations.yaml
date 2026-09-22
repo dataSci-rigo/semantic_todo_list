@@ -1,0 +1,23 @@
+# Rotating lines. Index = number of prior uses % len (franklin-style).
+self_forgiveness:
+  - "Logged. That was one block, not the day."
+  - "Noted. The next 5 minutes are still available."
+  - "One drift. The plan for the next block is unchanged."
+  - "Logged as data. Nothing else to do with it."
+  - "A slip. Self-criticism raises the next one; this line is the whole verdict."
+
+flash_reframes:
+  - {id: friend, prompt: "What would you say to a friend who did this?"}
+  - {id: afterward, prompt: "What did you do afterward that counts as fine or good?"}
+  - {id: others, prompt: "How much does the other person think about this today?"}
+  - {id: tse, prompt: "Temporary, specific, external: which applies?"}
+
+prompts:
+  future_self:
+    - "Write one line to the person who opens this task tomorrow."
+    - "What does tomorrow-you wish you had done in the next 5 minutes?"
+  premortem:
+    - "It is evening and this did not move. The most likely reason?"
+    - "Worst realistic outcome if this is done badly today?"
+  drive_audit:
+    - "Which is missing here: autonomy, mastery, purpose? One line to add it."

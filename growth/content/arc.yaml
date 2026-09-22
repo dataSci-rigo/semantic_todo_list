@@ -1,0 +1,244 @@
+# Growth Bot — the daily arc and every command-started touch.
+# One renderer walks these steps; nothing here is special-cased in code except
+# the names listed under `effect:`, `text_from:` and `options_from:` (registries
+# in growth/effects.py and growth/ctx.py). Edit freely; restart the bot to apply.
+#
+# Step keys: id, field (defaults to id), type, prompt, options / options_from,
+# text_from, kind (timer), seconds_from, from (taskpick), when, skip, end_if,
+# final_text, emit, effect, grade, survival, skip_until_level, buttons, after,
+# max/min (multi), repeat_for. A `{slot: name}` entry marks where electives go.
+
+touches:
+  - id: morning
+    title: Morning
+    trigger: scheduled:morning
+    max_electives: 1
+    on_complete_emit: morning_logged
+    done_text_from: morning_summary
+    steps:
+      - {id: intro, type: note, text_from: morning_intro, when: {path: ctx.has_intro, eq: true}}
+      - {id: cap, field: capacity, type: pick, prompt: "Capacity today?",
+         options: [{value: 0, label: "0 h"}, {value: 1, label: "1 h"}, {value: 2, label: "2 h"}, {value: 4, label: "4+ h"}],
+         effect: day_field, emit: capacity_set}
+      - {id: sleep, field: sleep, type: pick, prompt: "Sleep?",
+         options: [{value: poor, label: Poor}, {value: ok, label: OK}, {value: good, label: Good}],
+         effect: day_field}
+      - {id: rank, field: rank_ok, type: pick, prompt: "Today ({ctx.p_source}):\n{ctx.p_lines}",
+         when: {path: ctx.has_plist, eq: true},
+         options: [{value: ok, label: Confirm}, {value: swap12, label: "Swap 1↔2"}, {value: swap23, label: "Swap 2↔3"}, {value: manual, label: "Type them"}],
+         effect: rank_ok}
+      - {id: manual, field: manual_ranks, type: text, prompt: "P1; P2; P3 — in one message, separated by ; or new lines.", skip: false,
+         when: {any: [{path: answers.rank_ok, eq: manual}, {path: ctx.has_plist, eq: false}]},
+         effect: manual_ranks}
+      - {id: tier, field: tier, type: pick, prompt: "Block size today?", options_from: tiers.unlocked,
+         when: {path: ctx.tiers_unlocked, gt: 1}, effect: set_tier, survival: false}
+      - {id: ch1, field: challenge1, type: taskpick, prompt: "Challenge 1, from P1–P2.", from: [p1, p2],
+         effect: plan_challenge, emit: challenge_planned}
+      - {id: ch2, field: challenge2, type: taskpick, prompt: "Challenge 2.", from: [p1, p2],
+         when: {path: ctx.challenges_per_day, eq: 2}, effect: plan_challenge, survival: false}
+      - {slot: wont, always: true}
+      - {id: rest, field: rest_budget, type: multi, prompt: "Rest budget today.", options_from: rest_menu.restores,
+         when: {path: ctx.has_restores, eq: true}, effect: rest_budget, emit: rest_budget_set}
+      - {id: predict, field: failure_point, type: text, prompt: "Today's failure point. When, and what pulls you?",
+         effect: day_field, emit: failure_point_set, survival: false}
+      - {slot: intro_weekly}
+      - {slot: franklin}
+      - {slot: core_field}
+      - {slot: visualize}
+    survival: {steps: [cap, sleep, rank, manual, ch1, rest], slots: [wont]}
+
+  - id: refocus
+    title: Refocus
+    trigger: window
+    max_electives: 1
+    done_text: "Logged."
+    steps:
+      - {id: number, field: number, type: pick, prompt: "What are you on right now, and what number is it?",
+         options_from: p_buttons, effect: refocus_number, emit: refocus_answered,
+         end_if: [p1, p2], final_text: {p1: "P1, on it.", p2: "P2, on it."}}
+      - {id: rest_kind, field: rest_kind, type: pick, prompt: "Chosen or drifted?",
+         when: {path: answers.number, eq: rest},
+         options: [{value: chosen, label: Chosen}, {value: drifted, label: Drifted}],
+         effect: refocus_rest_kind, end_if: [chosen], final_text: {chosen: "Rest, chosen. {ctx.rest_left_line}"}}
+      - {id: excuse, field: excuse_id, type: pick, prompt: "P1 is {ctx.p1_title}. Excuse?",
+         when: {any: [{path: answers.number, in: [p3, p4, p5, other]}, {path: answers.rest_kind, eq: drifted}]},
+         options_from: excuses.family2, effect: excuse_log,
+         end_if: [note_only], final_text: {note_only: "Noted. Counter-move at the next challenge start."}}
+      - {id: excuse_new, field: excuse_new, type: text, prompt: "The excuse, in your words.", skip: false,
+         when: {path: answers.excuse_id, eq: new}, effect: excuse_new}
+      - {id: counter, field: counter_choice, type: note, text_from: excuse_counter,
+         when: {path: ctx.excuse_open, eq: true},
+         buttons: [{value: surf, label: "Surf 90 s", next: surf}, {value: start5, label: "5 min on P1", next: start5}]}
+      - {id: surf, field: surf, type: timer, kind: surf, when: {path: answers.counter_choice, eq: surf},
+         emit: surf_completed, after: start5}
+      - {id: start5, field: start5, type: timer, kind: start5,
+         when: {path: answers.counter_choice, in: [surf, start5]},
+         emit: start5_completed, final_text: {done: "5 min on {ctx.p1_title} logged. Next small step, or /rest."}}
+      - {slot: spark}
+    survival: {steps: [number], slots: []}
+
+  - id: evening
+    title: Evening
+    trigger: scheduled:evening
+    max_electives: 2
+    on_complete_emit: evening_logged
+    done_text_from: evening_summary
+    steps:
+      - {id: ch, field: ch_outcome, type: pick, repeat_for: challenges_today, prompt: "Challenge {item.n} · {item.title}: done or rolled?",
+         options: [{value: done, label: Done}, {value: partial, label: Partial}, {value: rolled, label: Rolled}],
+         effect: challenge_outcome}
+      - {id: wont_check, field: wont_kept, type: ynp, prompt: "I won't: {ctx.wont_today}. Kept?",
+         when: {path: ctx.wont_today, truthy: true}, effect: day_field, emit: wont_checked}
+      - {id: rest_ok, field: rest_restored, type: yesno, repeat_for: rest_items_today,
+         prompt: "{item.title}: did it restore you?", effect: rest_restored, emit: rest_checked}
+      - {id: proud, field: proud, type: text, prompt: "One thing you are proud of today.", skip: false,
+         effect: proud_win, emit: win_logged, grade: true}
+      - {id: forgive, type: note, text_from: self_forgiveness, when: {path: ctx.misalloc_today, eq: true}}
+      - {id: easier, field: easier_tomorrow, type: text, prompt: "One thing that would make tomorrow's P1 easier to start.",
+         when: {path: ctx.misalloc_today, eq: true}, effect: day_field}
+      - {slot: observation, always: true}
+      - {slot: three_good}
+      - {slot: franklin_evening}
+    survival: {steps: [ch, proud], slots: []}
+
+  - id: aim
+    title: Challenge start
+    trigger: command
+    max_electives: 1
+    done_text_from: aim_summary
+    steps:
+      - {id: task, field: task, type: taskpick, prompt: "Which task?", from: [p1, p2, p3, p4, p5],
+         effect: challenge_start}
+      - {id: aim, field: done_looks_like, type: text, prompt: "Done looks like ___.", skip: false,
+         effect: challenge_field}
+      - {id: why, field: why_not_p5, type: text, prompt: "Why this one, not P5? One line.",
+         skip_until_level: {C: 2}, effect: challenge_field}
+      - {id: est, field: est_min, type: pick, prompt: "Estimate?", options_from: block_minutes,
+         effect: challenge_field, emit: challenge_started}
+      - {id: urge, field: urge, type: note, text_from: urge_offer, when: {path: ctx.excuse_today, eq: true},
+         buttons: [{value: surf, label: "Surf 90 s", next: surf}, {value: go, label: "Start now", next: remind}]}
+      - {id: surf, field: surf, type: timer, kind: surf, when: {path: answers.urge, eq: surf}, emit: surf_completed,
+         after: remind}
+      - {slot: premortem}
+      - {id: remind, type: note, text_from: remind_line, end: true}
+
+  - id: end
+    title: Challenge end
+    trigger: command
+    max_electives: 1
+    done_text_from: end_summary
+    steps:
+      - {id: moved, field: moved, type: scale5, prompt: "Did it move?", effect: challenge_field}
+      - {id: resume, field: resume_note, type: text, prompt: "Where you were, next step.", grade: true,
+         effect: challenge_field}
+      - {id: actual, field: actual_min, type: pick, prompt: "Actual time?", options_from: block_minutes,
+         effect: challenge_field}
+      - {id: next, field: next_choice, type: pick, prompt: "{ctx.est_vs_actual}",
+         options: [{value: step, label: "Next small step"}, {value: rest, label: "Rest budget"}, {value: done, label: "Done for now"}],
+         effect: challenge_end}
+      - {id: next_text, field: next_step, type: text, prompt: "The next small step.",
+         when: {path: answers.next_choice, eq: step}, effect: challenge_field}
+      - {slot: error_log}
+
+  - id: avoid
+    title: Avoiding
+    trigger: command
+    max_electives: 0
+    done_text: "Logged."
+    steps:
+      - {id: task, field: task, type: taskpick, prompt: "Which task are you avoiding?", from: [p1, p2, p3, p4, p5],
+         effect: avoid_task}
+      - {id: excuse, field: excuse_id, type: pick, prompt: "Excuse?", options_from: excuses.family1,
+         effect: excuse_log, end_if: [note_only], final_text: {note_only: "Noted."}}
+      - {id: excuse_new, field: excuse_new, type: text, prompt: "The excuse, in your words.", skip: false,
+         when: {path: answers.excuse_id, eq: new}, effect: excuse_new}
+      - {id: counter, field: counter_choice, type: note, text_from: excuse_counter,
+         buttons: [{value: surf, label: "Surf 90 s", next: surf}, {value: start5, label: "5-min start", next: start5}]}
+      - {id: surf, field: surf, type: timer, kind: surf, when: {path: answers.counter_choice, eq: surf},
+         emit: surf_completed, after: start5}
+      - {id: start5, field: start5, type: timer, kind: start5,
+         when: {path: answers.counter_choice, in: [surf, start5]}, emit: start5_completed,
+         final_text: {done: "5 min logged. Next small step, or /rest."}}
+
+  - id: rest
+    title: Rest
+    trigger: command
+    max_electives: 0
+    done_text: "Rest logged."
+    steps:
+      - {id: item, field: rest_item, type: pick, prompt: "Which rest?", options_from: rest_menu.budget_today,
+         effect: rest_pick}
+      - {id: timer, field: rest_timer, type: timer, kind: rest, seconds_from: ctx.rest_seconds,
+         emit: rest_ended, effect: rest_end}
+      - {id: back, field: back, type: note, text_from: rest_back_line,
+         buttons: [{value: yes, label: "Back to P1", end: true}]}
+
+  - id: surf
+    title: Surf the urge
+    trigger: command
+    max_electives: 0
+    done_text: "Done."
+    steps:
+      - {id: surf, field: surf, type: timer, kind: surf, emit: surf_completed}
+      - {id: then, field: then, type: note, text_from: surf_done_line,
+         buttons: [{value: start5, label: "5 min on P1", next: start5}]}
+      - {id: start5, field: start5, type: timer, kind: start5, when: {path: answers.then, eq: start5},
+         emit: start5_completed, final_text: {done: "5 min on {ctx.p1_title} logged."}}
+
+  - id: start5
+    title: 5-minute start
+    trigger: command
+    max_electives: 0
+    done_text: "5 min logged. Next small step, or /rest."
+    steps:
+      - {id: start5, field: start5, type: timer, kind: start5, emit: start5_completed}
+
+  - id: win
+    title: Win
+    trigger: command
+    max_electives: 0
+    done_text: "Kept."
+    steps:
+      - {id: text, field: win_text, type: text, prompt: "The win, in a line or two.", skip: false, effect: win_save,
+         emit: win_logged}
+
+  - id: win_old
+    title: Past win
+    trigger: command
+    max_electives: 0
+    done_text: "Kept."
+    steps:
+      - {id: text, field: win_text, type: text, prompt: "A past win, any era. Start with a year or date if you remember it.",
+         skip: false, effect: win_old_save, emit: win_logged}
+
+  - id: visualize
+    title: Visualization
+    trigger: command
+    max_electives: 0
+    done_text: "Kept. It comes back when a task matches."
+    steps:
+      - {id: offer, field: offer, type: note, text_from: visualization_prompt,
+         buttons: [{value: write, label: "Write it", next: text}, {value: later, label: "Ask again later", end: true}, {value: skip, label: "Not today", end: true}],
+         effect: visualization_offer}
+      - {id: text, field: vis_text, type: text, prompt: "One concrete scene.", skip: false, effect: visualization_save,
+         emit: visualization_logged}
+
+  - id: onboard
+    title: Setup
+    trigger: command
+    max_electives: 0
+    done_text: "Setup complete."
+    on_complete_emit: onboarding_done
+    steps:
+      - {id: intro, type: note, text_from: onboard_intro}
+      - {id: why, field: why, type: text, prompt: "Why do you get up in the morning? What would you do if money weren't a factor?", skip: false, effect: core_field, emit: core_field_set}
+      - {id: eulogy, field: eulogy, type: text, prompt: "What do you want people to say at your funeral? Three sentences.", effect: core_field, emit: core_field_set}
+      - {id: fixed, field: fixed_areas, type: text, prompt: "Where do you believe you just aren't a ___ person? One per line.", effect: core_field, emit: core_field_set}
+      - {id: interest, field: top_interest, type: text, prompt: "What activity makes you lose track of time?", effect: core_field, emit: core_field_set}
+      - {id: strengths, field: signature_strengths, type: multi, prompt: "Top 3 strengths.", options_from: strengths, max: 3, effect: core_field, emit: core_field_set}
+      - {id: avoided, field: avoided_tasks, type: text, prompt: "What have you avoided for more than a week? Names only, one per line.", effect: core_field, emit: core_field_set}
+      - {id: restores, field: rest_restores, type: text, prompt: "What restores you, and for how long? One per line: activity, minutes.", effect: rest_menu_field, emit: core_field_set}
+      - {id: feels_like, field: rest_feels_like, type: text, prompt: "What feels like rest but leaves you worse? One per line.", effect: rest_menu_field, emit: core_field_set}
+      - {id: virtues, field: franklin_virtues, type: multi, prompt: "Pick 4 virtues.", options_from: virtues, max: 4, effect: core_field, emit: core_field_set}
+      - {id: roles, field: roles, type: text, prompt: "Your roles, comma-separated (father, son, husband, engineer, gardener…).", effect: core_field, emit: core_field_set}
+      - {id: outro, type: note, text_from: onboard_outro, end: true}

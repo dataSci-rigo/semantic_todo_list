@@ -1,0 +1,35 @@
+# Excuse Catalog seeds (spec §4). Copied into gb_excuses on first run; the
+# user's edits live in the DB. follow_up is the only code-known vocabulary:
+# start5 | surf | premortem | drive_audit | future_self | remind:<tag> | practice | rest_check | licensing
+families:
+  1: "not starting"
+  2: "starting the wrong thing"
+seeds:
+  - {id: f1_more_info, family: 1, size: small, text: "I need more info first",
+     counter_move: "5-min start on gathering one fact. Which fact?", follow_up: start5, cites: "Pychyl ch. 4"}
+  - {id: f1_no_time, family: 1, size: small, text: "Not enough time to do it properly",
+     counter_move: "Do it badly for 5 min.", follow_up: start5, cites: "Dweck ch. 2"}
+  - {id: f1_sharper_tomorrow, family: 1, size: small, text: "I'll be sharper tomorrow",
+     counter_move: "One line to tomorrow-you, then 5 min now.", follow_up: future_self, cites: "McGonigal ch. 7"}
+  - {id: f1_waiting, family: 1, size: small, text: "Someone else is waiting on something first",
+     counter_move: "Send the one message, then start.", follow_up: start5}
+  - {id: f1_dont_know_how, family: 1, size: big, text: "I don't know how",
+     counter_move: "That is a practice item, not a task. 5 min on finding the first sub-skill.", follow_up: practice, cites: "Duckworth ch. 7"}
+  - {id: f1_expose, family: 1, size: big, text: "It will expose me",
+     counter_move: "Worst realistic outcome, in one line. Then the record:", follow_up: "remind:looked_foolish_anyway", cites: "Kahneman ch. 24"}
+  - {id: f1_no_matter, family: 1, size: big, text: "It doesn't matter anyway",
+     counter_move: "Which of autonomy, mastery, purpose is missing? Your why:", follow_up: drive_audit, cites: "Pink ch. 4–6"}
+  - {id: f2_p5_interesting, family: 2, size: small, text: "P5 is more interesting",
+     counter_move: "That is {ctx.top_interest}, not the priority. 5 min on P1; P5 after.", follow_up: start5, flag: interest_drift}
+  - {id: f2_tired_for_p1, family: 2, size: small, text: "I'm too tired for P1 but not for P5",
+     counter_move: "Rest budget first, if any is left. Otherwise 5 min on P1, badly.", follow_up: rest_check}
+  - {id: f2_decision, family: 2, size: small, text: "P1 needs a decision I keep postponing",
+     counter_move: "The decision is the 5-min start.", follow_up: start5}
+  - {id: f2_waiting, family: 2, size: small, text: "P1 is other people's work / waiting on someone",
+     counter_move: "Send the one message. Then the next P1 sub-step.", follow_up: start5}
+  - {id: f2_boring, family: 2, size: big, text: "P1 is boring and I'll never finish it",
+     counter_move: "Which of autonomy, mastery, purpose can be added? Your why:", follow_up: drive_audit, cites: "Pink ch. 4–6"}
+  - {id: f2_research, family: 2, size: big, text: "Watching this is basically research / I need to know what's happening",
+     counter_move: "Is it on the restores list? If not: surf 90 s, then P1.", follow_up: rest_check, cites: "McGonigal ch. 9"}
+  - {id: f2_enough_today, family: 2, size: big, text: "I already did enough today",
+     counter_move: "Licensing. No break offered. Next small step.", follow_up: licensing, cites: "McGonigal ch. 4"}

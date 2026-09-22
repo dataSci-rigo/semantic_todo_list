@@ -1,0 +1,81 @@
+# Bot copy. Rules: second person or none, present tense, numbers over adjectives,
+# no "should", no praise for P1, no scolding for P5, no exclamation marks.
+help: |
+  <b>Growth</b> — the heart and head game. Tasks live in STM and the TaskBus; this layer works on starting, choosing, aiming, and resting on purpose.
+
+  Daily arc: /morning · /aim · /end · /now (refocus) · /evening. Timers: /rest, /surf, /start5. Not starting: /avoid. Wins: /win, /win_old, /wins, /remind. Setup: /start, /why. Progress: /status, /observe, /survival. Data: /mydata. /skip passes a text question, /cancel abandons the open card.
+
+help_short: |
+  <b>Growth</b>: /morning /aim /end /now /evening · /rest /surf /start5 · /avoid · /win /remind · /status · /help growth
+
+onboard_intro: |
+  Setup: eleven short answers. Each one is a card; reply to it, or type. /skip passes, /why edits later.
+
+onboard_outro: |
+  That is the frame. Ten past wins seed the Success Bank: /win_old, any time, one per message.
+  The excuse catalog starts with 14 common excuses; /excuses lists them.
+  The arc runs daily: morning at {morning_time}, refocus around {windows}, evening at {evening_time}. Today's remaining touches are already scheduled; /status shows the times.
+
+survival_suggest: "Capacity 0 two days running. /survival on collapses the day to morning, one challenge, one refocus, evening. Levels freeze."
+survival_on: "Survival mode on. Morning, one challenge, one refocus, evening. Levels frozen."
+survival_off: "Survival mode off. Full arc from tomorrow."
+
+levelup: "{track_name} {track}{level} reached. {evidence}"
+tier_unlock: "Block size {label} unlocked. Pick it in the morning card."
+streak_milestone: "{n} days with at least one touch."
+streak_goal: "30 days, one touch or more each day."
+
+strengths:
+  - creativity
+  - curiosity
+  - judgment
+  - love of learning
+  - perspective
+  - bravery
+  - perseverance
+  - honesty
+  - zest
+  - love
+  - kindness
+  - social intelligence
+  - teamwork
+  - fairness
+  - leadership
+  - forgiveness
+  - humility
+  - prudence
+  - self-regulation
+  - appreciation of beauty
+  - gratitude
+  - hope
+  - humor
+  - spirituality
+
+virtues:
+  - {id: temperance, name: Temperance, precept: "Eat not to dullness; drink not to elevation."}
+  - {id: silence, name: Silence, precept: "Speak not but what may benefit others or yourself."}
+  - {id: order, name: Order, precept: "Let all your things have their places."}
+  - {id: resolution, name: Resolution, precept: "Perform without fail what you resolve."}
+  - {id: frugality, name: Frugality, precept: "Make no expense but to do good to others or yourself."}
+  - {id: industry, name: Industry, precept: "Lose no time; be always employed in something useful."}
+  - {id: sincerity, name: Sincerity, precept: "Use no hurtful deceit; think innocently and justly."}
+  - {id: justice, name: Justice, precept: "Wrong none by doing injuries or omitting the benefits that are your duty."}
+  - {id: moderation, name: Moderation, precept: "Avoid extremes; forbear resenting injuries."}
+  - {id: cleanliness, name: Cleanliness, precept: "Tolerate no uncleanliness in body, clothes, or habitation."}
+  - {id: tranquility, name: Tranquility, precept: "Be not disturbed at trifles, or at accidents common or unavoidable."}
+  - {id: chastity, name: Chastity, precept: "Rarely use venery but for health or offspring."}
+  - {id: humility, name: Humility, precept: "Imitate Jesus and Socrates."}
+
+block_minutes: [15, 30, 45, 60, 90, 120, 180]
+
+core_prompts:
+  why: "Why do you get up in the morning? What would you do if money weren't a factor?"
+  eulogy: "What do you want people to say at your funeral? Three sentences."
+  fixed_areas: "Where do you believe you just aren't a ___ person? One per line."
+  top_interest: "What activity makes you lose track of time?"
+  signature_strengths: "Top 3 strengths, comma-separated."
+  avoided_tasks: "What have you avoided for more than a week? Names only, one per line."
+  rest_restores: "What restores you, and for how long? One per line: activity, minutes."
+  rest_feels_like: "What feels like rest but leaves you worse? One per line."
+  franklin_virtues: "Four virtues, comma-separated."
+  roles: "Your roles, comma-separated."
