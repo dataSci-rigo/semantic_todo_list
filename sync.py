@@ -19,6 +19,7 @@ restored and the overwrite reported.
 from __future__ import annotations
 
 import json
+import time
 
 import ai
 import config
@@ -32,6 +33,13 @@ APP = config.TASKBUS_APP_ID
 
 _list_id: str | None = None
 _recent_merges: dict[int, dict] = {}  # task_id -> pre-merge local copy (for revert)
+
+# Auth watchdog: warn on Telegram when the sync account is signed out
+# (revoked/expired token, missing token file, or token for the wrong
+# account), re-warn daily while broken, confirm recovery. State lives in the
+# kv table so restarts don't re-spam.
+AUTH_REWARN_SECONDS = 24 * 3600
+ACCOUNT_PROBE_SECONDS = 24 * 3600
 
 
 def _get_list_id() -> str:
@@ -230,17 +238,98 @@ def _push_updates(list_id: str) -> None:
         db.touch_google_link(task["id"], result.get("updated"))
 
 
+# ── auth watchdog ────────────────────────────────────────────────────────
+
+def _is_auth_error(e: Exception) -> bool:
+    try:
+        from google.auth.exceptions import RefreshError
+        if isinstance(e, RefreshError):
+            return True
+    except ImportError:
+        pass
+    try:
+        from googleapiclient.errors import HttpError
+        if isinstance(e, HttpError) and e.resp.status == 401:
+            return True
+    except ImportError:
+        pass
+    return isinstance(e, RuntimeError) and "No Google token" in str(e)
+
+
+def _auth_failed(reason: str) -> None:
+    """Alert on Telegram, at most once per AUTH_REWARN_SECONDS. Also drops
+    the cached Google client so a token copied in later is picked up on the
+    very next cycle, no restart needed."""
+    gt.reset_service()
+    global _list_id
+    _list_id = None
+    db.kv_set("auth_alert_active", "1")
+    now = time.time()
+    last = float(db.kv_get("auth_alert_last_sent") or 0)
+    if now - last < AUTH_REWARN_SECONDS:
+        return
+    db.kv_set("auth_alert_last_sent", str(now))
+    print(f"  taskbus auth failure: {reason}")
+    tg.send_message(
+        f"⚠️ TaskBus sync is signed out of {config.SYNC_ACCOUNT} — Google rejected the "
+        f"token ({reason[:200]}).\n\n"
+        "Fix from the laptop:\n"
+        "1. cd ~/Documents/semantic_task_manager\n"
+        f"2. conda run -n p312 python sync_tasks.py --auth   (sign in as {config.SYNC_ACCOUNT})\n"
+        "3. gcloud compute scp data/google_token.json "
+        "a-bot:~/apps/semantic_task_manager/data/google_token.json --zone=us-central1-a\n\n"
+        "No restart needed — I retry every cycle and will confirm here when it's back. "
+        "I'll re-warn daily until then."
+    )
+
+
+def _auth_recovered() -> None:
+    if db.kv_get("auth_alert_active"):
+        db.kv_del("auth_alert_active")
+        db.kv_del("auth_alert_last_sent")
+        db.kv_del("account_mismatch")
+        tg.send_message(f"✅ Google sync is back — authorized as {config.SYNC_ACCOUNT}.")
+
+
+def _account_ok() -> bool:
+    """Daily probe that the token really belongs to config.SYNC_ACCOUNT.
+    On a verified mismatch: alert and refuse to sync (syncing the wrong
+    account's list would be worse than not syncing), then re-probe every
+    cycle so recovery is quick. Unverifiable (legacy token without the
+    email scope) passes — the auth errors still catch a dead token."""
+    now = time.time()
+    mismatch = db.kv_get("account_mismatch")
+    last = float(db.kv_get("account_probe_at") or 0)
+    if not mismatch and now - last < ACCOUNT_PROBE_SECONDS:
+        return True
+    db.kv_set("account_probe_at", str(now))
+    email = gt.get_account_email()
+    if email and email.lower() != config.SYNC_ACCOUNT.lower():
+        db.kv_set("account_mismatch", "1")
+        _auth_failed(f"token belongs to {email}, not {config.SYNC_ACCOUNT}")
+        return False
+    if email and mismatch:
+        db.kv_del("account_mismatch")
+    return True
+
+
 # ── public API ───────────────────────────────────────────────────────────
 
 def run_sync() -> None:
     try:
+        if not _account_ok():
+            return
         list_id = _get_list_id()
         _migrate_old_links(list_id)
         _pull_changes(list_id)
         _push_new(list_id)
         _push_updates(list_id)
+        _auth_recovered()
     except Exception as e:
-        print(f"  google sync error: {e}")
+        if _is_auth_error(e):
+            _auth_failed(str(e) or type(e).__name__)
+        else:
+            print(f"  google sync error: {e}")
 
 
 def revert_merge(task_id: int) -> bool:

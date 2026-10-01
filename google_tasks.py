@@ -31,6 +31,13 @@ def get_service():
     return _service
 
 
+def reset_service() -> None:
+    """Drop the cached client so the next call re-reads the token file —
+    lets a freshly copied-in token take effect without a restart."""
+    global _service
+    _service = None
+
+
 def ensure_list(name: str) -> str:
     service = get_service()
     result = service.tasklists().list(maxResults=100).execute()

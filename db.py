@@ -152,6 +152,11 @@ CREATE TABLE IF NOT EXISTS item_storage (
     location_id INTEGER REFERENCES storage_locations(id),
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 SUPPLY_STORE_LIST = "supply store run"
@@ -997,6 +1002,36 @@ def get_all_stored_items() -> list[sqlite3.Row]:
             "LEFT JOIN storage_locations dl ON dl.id = s.location_id "
             "ORDER BY e.canonical_name"
         ).fetchall()
+    finally:
+        conn.close()
+
+
+# ── tiny persistent key/value store (sync auth-alert state, etc.) ────────
+
+def kv_get(key: str) -> str | None:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def kv_set(key: str, value: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute("INSERT INTO kv (key, value) VALUES (?, ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def kv_del(key: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+        conn.commit()
     finally:
         conn.close()
 
