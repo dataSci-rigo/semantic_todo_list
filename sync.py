@@ -271,11 +271,11 @@ def _auth_failed(reason: str) -> None:
     db.kv_set("auth_alert_last_sent", str(now))
     print(f"  taskbus auth failure: {reason}")
     tg.send_message(
-        f"⚠️ TaskBus sync is signed out of {config.SYNC_ACCOUNT} — Google rejected the "
+        f"⚠️ TaskBus sync is signed out of {config.SYNC_ACCOUNT_LABEL} — Google rejected the "
         f"token ({reason[:200]}).\n\n"
         "Fix from the laptop:\n"
         "1. cd ~/Documents/semantic_task_manager\n"
-        f"2. conda run -n p312 python sync_tasks.py --auth   (sign in as {config.SYNC_ACCOUNT})\n"
+        f"2. conda run -n p312 python sync_tasks.py --auth   (sign in as {config.SYNC_ACCOUNT_LABEL})\n"
         "3. gcloud compute scp data/google_token.json "
         "a-bot:~/apps/semantic_task_manager/data/google_token.json --zone=us-central1-a\n\n"
         "No restart needed — I retry every cycle and will confirm here when it's back. "
@@ -288,7 +288,7 @@ def _auth_recovered() -> None:
         db.kv_del("auth_alert_active")
         db.kv_del("auth_alert_last_sent")
         db.kv_del("account_mismatch")
-        tg.send_message(f"✅ Google sync is back — authorized as {config.SYNC_ACCOUNT}.")
+        tg.send_message(f"✅ Google sync is back — authorized as {config.SYNC_ACCOUNT_LABEL}.")
 
 
 def _account_ok() -> bool:
@@ -303,6 +303,8 @@ def _account_ok() -> bool:
     if not mismatch and now - last < ACCOUNT_PROBE_SECONDS:
         return True
     db.kv_set("account_probe_at", str(now))
+    if not config.SYNC_ACCOUNT:
+        return True    # no expected account configured (STM_SYNC_ACCOUNT): nothing to compare
     email = gt.get_account_email()
     if email and email.lower() != config.SYNC_ACCOUNT.lower():
         db.kv_set("account_mismatch", "1")

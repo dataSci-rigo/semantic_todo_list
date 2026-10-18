@@ -6,8 +6,9 @@ Reference implementation: [`taskbus.py`](taskbus.py) — stdlib-only, copy it
 into your bot. The sync loop that honors this contract end-to-end is
 [`sync.py`](sync.py); a standalone driver is [`sync_tasks.py`](sync_tasks.py).
 
-- **Sync account:** `rlunaorozco@berkeley.edu` (every bot authorizes Google
-  Tasks OAuth as this account; `sync_tasks.py` refuses any other).
+- **Sync account:** the Google account set as `STM_SYNC_ACCOUNT` in `.env`
+  (every bot authorizes Google Tasks OAuth as this account; `sync_tasks.py`
+  refuses any other).
 - **Bus list:** the Google Tasks list named **`TaskBus`** (create it if
   missing — `tasklists.list`, match by title, else `tasklists.insert`).
 - **Scope needed:** `https://www.googleapis.com/auth/tasks` (plus
@@ -131,7 +132,7 @@ v1. Cross-project shared subtasks (`identity`) are reserved for v2.
 
 ## 7. Checklist for a new bot
 
-- [ ] OAuth as `rlunaorozco@berkeley.edu`, scope `auth/tasks`
+- [ ] OAuth as the `STM_SYNC_ACCOUNT` account, scope `auth/tasks`
 - [ ] Find-or-create list `TaskBus`
 - [ ] Copy `taskbus.py` (or reimplement §2–§4 exactly)
 - [ ] Pick an `app` id nobody uses (lowercase, short)

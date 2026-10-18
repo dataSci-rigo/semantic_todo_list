@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Standalone TaskBus sync driver — the sync account is
-rlunaorozco@berkeley.edu (config.SYNC_ACCOUNT); this script refuses to sync
-as anyone else once the account is verifiable.
+"""Standalone TaskBus sync driver — the sync account is STM_SYNC_ACCOUNT
+from .env (config.SYNC_ACCOUNT); this script refuses to sync as anyone else
+once the account is verifiable.
 
 Usage:
   python sync_tasks.py            one full sync cycle (cron-friendly)
   python sync_tasks.py --auth     (re)authorize in a browser — sign in as
-                                  rlunaorozco@berkeley.edu; saves the token
+                                  the STM_SYNC_ACCOUNT account; saves the token
                                   with the email scope so the account check
                                   becomes enforceable
   python sync_tasks.py --status   show account, shared list, link stats
@@ -25,10 +25,14 @@ import db
 
 def _account_check(strict: bool) -> bool:
     import google_tasks as gt
+    if not config.SYNC_ACCOUNT:
+        print("⚠ STM_SYNC_ACCOUNT is not set in .env — can't check which Google "
+              "account the token belongs to.")
+        return not strict
     email = gt.get_account_email()
     if email is None:
         print(f"⚠ Can't verify the Google account (token predates the email scope).\n"
-              f"  Expected: {config.SYNC_ACCOUNT} — run `python sync_tasks.py --auth` to fix.")
+              f"  Expected: {config.SYNC_ACCOUNT_LABEL} — run `python sync_tasks.py --auth` to fix.")
         return not strict
     if email.lower() != config.SYNC_ACCOUNT.lower():
         print(f"✗ Token belongs to {email}, but the sync account must be "
@@ -40,7 +44,7 @@ def _account_check(strict: bool) -> bool:
 
 def cmd_auth() -> int:
     from google_auth_oauthlib.flow import InstalledAppFlow
-    print(f"A browser window will open — sign in as {config.SYNC_ACCOUNT}.")
+    print(f"A browser window will open — sign in as {config.SYNC_ACCOUNT_LABEL}.")
     flow = InstalledAppFlow.from_client_secrets_file(
         config.GOOGLE_CLIENT_SECRET_PATH, config.GOOGLE_TASKS_SCOPES
     )

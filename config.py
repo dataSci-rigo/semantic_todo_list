@@ -31,7 +31,11 @@ SYNC_INTERVAL_SECONDS = 10 * 60
 
 # TaskBus protocol (see TASKBUS.md)
 TASKBUS_APP_ID = "stm"
-SYNC_ACCOUNT = os.getenv("STM_SYNC_ACCOUNT", "rlunaorozco@berkeley.edu")
+# The Google account every bot syncs the TaskBus through. Set it in .env only
+# (STM_SYNC_ACCOUNT): the repo is public, so no address lives in code. Unset,
+# the wrong-account check is skipped (a dead token is still caught).
+SYNC_ACCOUNT = os.getenv("STM_SYNC_ACCOUNT", "").strip()
+SYNC_ACCOUNT_LABEL = SYNC_ACCOUNT or "the TaskBus Google account (STM_SYNC_ACCOUNT)"
 
 TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
 WINDOW_CHECK_INTERVAL_SECONDS = 60
